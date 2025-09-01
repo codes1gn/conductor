@@ -1,0 +1,2 @@
+# Runtime dependencies for Conductor PyTorch Backend Integration
+torch>=2.0.0
