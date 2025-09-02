@@ -16,11 +16,22 @@ __author__ = "Conductor Team"
 __email__ = "conductor@example.com"
 
 # Public API exports
-from .backend import register_backend, ConductorBackend
+from .backend import (
+    register_backend, 
+    ConductorBackend, 
+    is_backend_registered,
+    get_backend_info,
+    list_supported_operations,
+    configure_backend
+)
 
 __all__ = [
     "register_backend",
     "ConductorBackend",
+    "is_backend_registered",
+    "get_backend_info", 
+    "list_supported_operations",
+    "configure_backend",
 ]
 
 # Automatically register the backend when the package is imported

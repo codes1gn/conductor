@@ -1,0 +1,34 @@
+// File: samples/fused/add_relu.co
+// Description: Fused addition and ReLU activation
+// Source: torch.relu(torch.add(input1, input2))
+// Optimizations: Elementwise fusion, intermediate buffer elimination
+
+// Buffer declarations
+local input1: float32[batch_size, feature_size];
+local input2: float32[batch_size, feature_size];
+local output: float32[batch_size, feature_size];
+
+// Fused function combining addition and ReLU
+function fused_add_relu(
+    a: float32[N, D], 
+    b: float32[N, D]
+) -> float32[N, D] {
+    // Fused elementwise operations
+    // Intermediate result is not materialized in memory
+    temp = add(a, b);
+    result = relu(temp);
+    return result;
+}
+
+// Alternative optimized implementation
+function optimized_add_relu(
+    a: float32[N, D], 
+    b: float32[N, D]
+) -> float32[N, D] {
+    // Direct fusion without intermediate buffer
+    result = relu(add(a, b));
+    return result;
+}
+
+// Main execution using fused operation
+output = fused_add_relu(input1, input2);

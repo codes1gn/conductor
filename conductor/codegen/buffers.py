@@ -42,6 +42,15 @@ class Buffer:
         if self.consumers is None:
             self.consumers = []
     
+    def __hash__(self):
+        """Make Buffer hashable for use in sets and dictionaries."""
+        # Use id() to ensure unique hash for each instance
+        return hash(id(self))
+    
+    def __eq__(self, other):
+        """Define equality based on object identity."""
+        return self is other
+    
     def promote_scope(self, new_scope: BufferScope) -> None:
         """
         Promote buffer to higher scope when needed for sharing.

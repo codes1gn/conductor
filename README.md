@@ -102,8 +102,36 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 We welcome contributions! Please see our [Contributing Guide](docs/development/contributing.md) for details.
 
+## Documentation
+
+Comprehensive documentation is available in the `docs/` directory:
+
+- **[Getting Started Guide](docs/guides/getting_started.md)** - Quick start for new users
+- **[Advanced Usage](docs/guides/advanced_usage.md)** - Advanced features and customization
+- **[API Reference](docs/api/)** - Complete API documentation
+- **[Examples](examples/)** - Working code examples and demonstrations
+- **[Troubleshooting](docs/guides/troubleshooting.md)** - Common issues and solutions
+- **[Contributing Guide](docs/development/contributing.md)** - How to contribute to the project
+
+## Examples
+
+The `examples/` directory contains comprehensive examples:
+
+- **[Basic Usage](examples/basic_usage.py)** - Simple torch.compile integration
+- **[Advanced Fusion](examples/advanced_fusion.py)** - Fusion optimization strategies
+- **[Benchmarking](examples/benchmarking.py)** - Performance comparison and analysis
+- **[Custom Operations](examples/custom_operations.py)** - Extending with custom operations
+
+## Sample DSL Files
+
+The `samples/` directory contains example Conductor DSL files showing how PyTorch operations are converted:
+
+- **Elementwise Operations** - Basic operations like add, mul, relu
+- **Fused Operations** - Optimized fusion patterns
+- **Complex Patterns** - Advanced operations like attention mechanisms
+
 ## Support
 
-- Documentation: [https://conductor-pytorch.readthedocs.io](https://conductor-pytorch.readthedocs.io)
-- Issues: [GitHub Issues](https://github.com/conductor/conductor-pytorch/issues)
-- Discussions: [GitHub Discussions](https://github.com/conductor/conductor-pytorch/discussions)
+- **Documentation**: [docs/](docs/) directory
+- **Issues**: [GitHub Issues](https://github.com/conductor/conductor-pytorch/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/conductor/conductor-pytorch/discussions)

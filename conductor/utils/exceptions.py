@@ -203,6 +203,11 @@ class FallbackHandler:
                 # Fallback for older PyTorch versions
                 return graph_module.forward
                 
+        except AttributeError:
+            # torch.compile not available, use eager execution
+            logger.warning("torch.compile not available, using eager execution")
+            return graph_module.forward
+            
         except Exception as e:
             raise RuntimeError(f"Fallback compilation failed: {e}")
             

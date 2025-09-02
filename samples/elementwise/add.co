@@ -1,0 +1,22 @@
+// File: samples/elementwise/add.co
+// Description: Simple elementwise addition operation
+// Source: torch.add(input1, input2)
+// Optimizations: Direct mapping, no fusion opportunities
+
+// Buffer declarations
+local input1: float32[batch_size, feature_size];
+local input2: float32[batch_size, feature_size];
+local output: float32[batch_size, feature_size];
+
+// Function definition for elementwise addition
+function elementwise_add(
+    a: float32[N, D], 
+    b: float32[N, D]
+) -> float32[N, D] {
+    // Elementwise addition with broadcasting support
+    result = add(a, b);
+    return result;
+}
+
+// Main execution
+output = elementwise_add(input1, input2);
