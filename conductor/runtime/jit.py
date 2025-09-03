@@ -16,7 +16,7 @@ import torch
 from .loader import CompiledArtifact, ExecutableKernel
 from ..codegen.graph import GraphAnalyzer
 from ..codegen.fusion import FusionEngine
-from ..codegen.dsl import DSLGenerator
+from ..codegen.choreo_dsl import ChoreoDSLGenerator
 from ..utils.exceptions import CompilationError, UnsupportedOperationError, DeviceError, get_fallback_handler
 from ..utils.logging import get_logger
 
@@ -42,7 +42,7 @@ class JITCompiler:
         self._cache = CompilationCache(cache_dir, max_cache_size_mb)
         self._graph_analyzer = GraphAnalyzer()
         self._fusion_engine = FusionEngine()
-        self._dsl_generator = DSLGenerator()
+        self._dsl_generator = ChoreoDSLGenerator()
         self._logger = get_logger(__name__)
         
     def compile_graph(self, graph_module: torch.fx.GraphModule) -> CompiledArtifact:
@@ -97,30 +97,32 @@ class JITCompiler:
                 for node in cluster.nodes:
                     node.fusion_group = cluster
             
-            # Step 3: Generate Conductor DSL
-            self._logger.debug("Generating Conductor DSL")
-            dsl_content = self._dsl_generator.generate_dsl_file(dag)
-            
+            # Step 3: Generate Choreo DSL
+            self._logger.debug("Generating Choreo DSL")
+            function_name = f"kernel_{graph_hash[:8]}"
+            dsl_content = self._dsl_generator.generate_dsl_file(dag, function_name)
+
             # Write DSL to temporary file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.co', delete=False) as dsl_file:
                 dsl_file.write(dsl_content)
                 dsl_file_path = dsl_file.name
-            
+
             try:
-                # Step 4: Invoke external compiler
-                self._logger.debug(f"Invoking Conductor compiler on {dsl_file_path}")
-                artifact_path = self.invoke_conductor_compiler(dsl_file_path)
+                # Step 4: Invoke Choreo compiler
+                self._logger.debug(f"Invoking Choreo compiler on {dsl_file_path}")
+                artifact_path = self.invoke_choreo_compiler(dsl_file_path)
                 
                 # Step 5: Create compiled artifact
                 artifact = CompiledArtifact(
                     path=artifact_path,
                     artifact_type='shared_library',
-                    entry_point='conductor_kernel_main',
+                    entry_point=function_name,
                     metadata={
                         'graph_hash': graph_hash,
                         'node_count': len(dag.nodes),
                         'fusion_clusters': len(fusion_clusters),
-                        'dsl_content': dsl_content
+                        'dsl_content': dsl_content,
+                        'function_name': function_name
                     }
                 )
                 
@@ -158,80 +160,137 @@ class JITCompiler:
             self._logger.debug(f"Error report:\n{error_report}")
             raise compilation_error
             
-    def invoke_conductor_compiler(self, dsl_file: str) -> str:
+    def invoke_choreo_compiler(self, dsl_file: str) -> str:
         """
-        Call external Conductor CLI compiler.
-        
+        Call external Choreo compiler to compile DSL to shared library.
+
         Args:
-            dsl_file: Path to DSL file to compile
-            
+            dsl_file: Path to Choreo DSL file to compile
+
         Returns:
-            Path to compiled artifact
-            
+            Path to compiled shared library
+
         Raises:
             CompilationError: If compilation fails
         """
+        self._logger.info(f"Invoking Choreo compiler for {dsl_file}")
+
         if not os.path.exists(dsl_file):
             raise CompilationError(f"DSL file not found: {dsl_file}", "", "")
-        
-        # Create temporary output file
-        with tempfile.NamedTemporaryFile(suffix='.so', delete=False) as tmp_file:
-            output_path = tmp_file.name
-        
+
+        # Generate output paths
+        base_name = os.path.splitext(dsl_file)[0]
+        object_path = f"{base_name}.o"
+        shared_lib_path = f"{base_name}.so"
+
+        # Step 1: Compile to object file using choreo -c -fpic
+        compile_cmd = [
+            'choreo',
+            '-c',           # Compile only, don't link
+            '-fpic',        # Generate position-independent code for shared library
+            dsl_file,
+            '-o', object_path
+        ]
+
         try:
-            # Construct compiler command
-            # Note: This assumes a 'conductor' CLI tool exists in PATH
-            # In a real implementation, this would be the actual Conductor compiler
-            cmd = ['conductor', 'compile', dsl_file, '-o', output_path]
-            
-            self._logger.debug(f"Running compiler command: {' '.join(cmd)}")
-            
-            # Execute compiler
+            self._logger.debug(f"Running Choreo compiler: {' '.join(compile_cmd)}")
+
+            # Step 1: Run Choreo compiler to generate object file
             result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                timeout=300  # 5 minute timeout
+                compile_cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minutes
+                check=False
             )
-            
-            # Check if compilation succeeded
+
             if result.returncode != 0:
                 # Read DSL content for error context
                 try:
                     with open(dsl_file, 'r') as f:
                         dsl_content = f.read()
                 except:
-                    dsl_content = "Could not read DSL file"
-                
-                error_msg = f"Conductor compilation failed with return code {result.returncode}"
-                raise CompilationError(error_msg, dsl_content, result.stderr)
-            
-            # Verify output file was created
-            if not os.path.exists(output_path):
+                    dsl_content = "Unable to read DSL file"
+
+                error_msg = f"Choreo compilation failed with return code {result.returncode}"
+                if result.stderr:
+                    error_msg += f"\nStderr: {result.stderr}"
+                if result.stdout:
+                    error_msg += f"\nStdout: {result.stdout}"
+
                 raise CompilationError(
-                    f"Compiler did not generate expected output: {output_path}",
-                    "",
-                    result.stderr
+                    error_msg,
+                    dsl_code=dsl_content,
+                    compiler_output=result.stderr or result.stdout
                 )
-            
-            # Verify output file is not empty
-            if os.path.getsize(output_path) == 0:
+
+            # Verify object file was created
+            if not os.path.exists(object_path) or os.path.getsize(object_path) == 0:
                 raise CompilationError(
-                    f"Compiler generated empty output file: {output_path}",
-                    "",
-                    result.stderr
+                    f"Choreo compiler succeeded but object file {object_path} was not created or is empty",
+                    dsl_code="",
+                    compiler_output=result.stdout
                 )
-                
-            self._logger.debug(f"Compilation successful, output: {output_path}")
-            return output_path
-            
+
+            # Step 2: Link object file into shared library using gcc/clang
+            link_cmd = [
+                'gcc',  # or 'clang' depending on system
+                '-shared',
+                '-fPIC',
+                object_path,
+                '-o', shared_lib_path
+            ]
+
+            self._logger.debug(f"Linking shared library: {' '.join(link_cmd)}")
+            link_result = subprocess.run(
+                link_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,  # Linking should be fast
+                check=False
+            )
+
+            if link_result.returncode != 0:
+                error_msg = f"Linking failed with return code {link_result.returncode}"
+                if link_result.stderr:
+                    error_msg += f"\nStderr: {link_result.stderr}"
+                if link_result.stdout:
+                    error_msg += f"\nStdout: {link_result.stdout}"
+
+                raise CompilationError(
+                    error_msg,
+                    dsl_code="",
+                    compiler_output=link_result.stderr or link_result.stdout
+                )
+
+            # Verify shared library was created
+            if not os.path.exists(shared_lib_path) or os.path.getsize(shared_lib_path) == 0:
+                raise CompilationError(
+                    f"Linking succeeded but shared library {shared_lib_path} was not created or is empty",
+                    dsl_code="",
+                    compiler_output=link_result.stdout
+                )
+
+            # Clean up object file
+            try:
+                os.remove(object_path)
+            except:
+                pass  # Don't fail if cleanup fails
+
+            self._logger.info(f"Choreo compilation and linking successful: {shared_lib_path}")
+            return shared_lib_path
+
         except subprocess.TimeoutExpired:
-            raise CompilationError("Conductor compilation timed out", "", "")
+            raise CompilationError(
+                "Choreo compilation timed out after 300 seconds",
+                dsl_code="",
+                compiler_output=""
+            )
         except FileNotFoundError:
             raise CompilationError(
-                "Conductor compiler not found in PATH. Please ensure the Conductor CLI is installed.",
-                "",
-                ""
+                "Choreo compiler not found in PATH. Please ensure Choreo is installed and available.",
+                dsl_code="",
+                compiler_output=""
             )
         except Exception as e:
             if isinstance(e, CompilationError):

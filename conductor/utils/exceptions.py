@@ -135,6 +135,34 @@ class DeviceError(ConductorError):
         self.device_id = device_id
 
 
+class ExecutionError(ConductorError):
+    """
+    Raised when kernel execution fails on GCU hardware.
+
+    This exception is raised when a compiled kernel fails to execute
+    properly on the GCU device, including runtime errors and device failures.
+    """
+
+    def __init__(self, message: str, kernel_name: Optional[str] = None, exit_code: Optional[int] = None):
+        """
+        Initialize execution error.
+
+        Args:
+            message: Error description
+            kernel_name: Optional name of the failing kernel
+            exit_code: Optional kernel exit code
+        """
+        details = {}
+        if kernel_name is not None:
+            details['kernel_name'] = kernel_name
+        if exit_code is not None:
+            details['exit_code'] = exit_code
+
+        super().__init__(message, details)
+        self.kernel_name = kernel_name
+        self.exit_code = exit_code
+
+
 class FallbackHandler:
     """
     Manages graceful fallback to alternative backends.

@@ -1,6 +1,6 @@
-# Conductor: PyTorch Backend Integration
+# Conductor = Choreo + Inductor 
 
-A minimalist PyTorch backend that enables seamless execution of ML models on custom 'gcu' hardware through the Conductor compiler.
+A minimalist Torch inductor backend that enables Choreo DSL for GCU hardware.
 
 ## Features
 
@@ -54,10 +54,10 @@ Conductor provides a clean pipeline from PyTorch FX Graph to executable GCU code
 ### Setup Development Environment
 
 ```bash
-git clone https://github.com/conductor/conductor-pytorch.git
-cd conductor-pytorch
+git clone https://github.com/codes1gn/conductor.git
+cd conductor
 pip install -e ".[dev]"
-pre-commit install
+pre-commit install # optional for pre-commit hooks
 ```
 
 ### Running Tests
@@ -124,7 +124,8 @@ The `examples/` directory contains comprehensive examples:
 
 ## Sample DSL Files
 
-The `samples/` directory contains example Conductor DSL files showing how PyTorch operations are converted:
+The `samples/` directory contains example Choreo DSL files showing how PyTorch operations are impl'd by 
+Choreo Language:
 
 - **Elementwise Operations** - Basic operations like add, mul, relu
 - **Fused Operations** - Optimized fusion patterns

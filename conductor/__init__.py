@@ -1,14 +1,21 @@
 """
-Conductor: PyTorch Backend Integration for GCU Hardware
+Conductor: PyTorch torch.compile Backend for GCU Hardware
 
-A minimalist PyTorch backend that enables seamless execution of ML models
-on custom 'gcu' hardware through the Conductor compiler.
+A streamlined PyTorch backend that enables seamless execution of ML models
+on GCU hardware through PyTorch's torch.compile system.
 
 Key Features:
-- Drop-in replacement using standard torch.compile API
-- Intelligent operation fusion and optimized memory management
-- JIT and AOT compilation modes with fallback mechanisms
+- Seamless torch.compile integration with 'gcu' backend
+- GCU hardware acceleration through Conductor framework
+- Automatic fallback to PyTorch eager execution
 - Zero learning curve for PyTorch developers
+
+Usage:
+    import torch
+    import conductor  # Registers 'gcu' backend
+
+    compiled_model = torch.compile(model, backend='gcu')
+    result = compiled_model(inputs)
 """
 
 __version__ = "0.1.0"
@@ -17,8 +24,8 @@ __email__ = "conductor@example.com"
 
 # Public API exports
 from .backend import (
-    register_backend, 
-    ConductorBackend, 
+    register_backend,
+    GCUInductorBackend,
     is_backend_registered,
     get_backend_info,
     list_supported_operations,
@@ -27,9 +34,9 @@ from .backend import (
 
 __all__ = [
     "register_backend",
-    "ConductorBackend",
+    "GCUInductorBackend",
     "is_backend_registered",
-    "get_backend_info", 
+    "get_backend_info",
     "list_supported_operations",
     "configure_backend",
 ]

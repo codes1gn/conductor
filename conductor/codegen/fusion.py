@@ -572,30 +572,38 @@ class FusionHeuristics:
     def can_fuse_elementwise(self, op1: str, op2: str) -> bool:
         """
         Determine if two elementwise operations can be fused.
-        
+
         Args:
             op1: First operation name
             op2: Second operation name
-            
+
         Returns:
             True if operations can be fused, False otherwise
         """
         elementwise_ops = {
-            'add', 'sub', 'mul', 'div', 'relu', 'sigmoid', 'tanh',
+            'add', 'sub', 'mul', 'div', 'sigmoid', 'tanh',
             'abs', 'neg', 'exp', 'log', 'sqrt', 'sin', 'cos'
         }
-        
-        # Both operations must be elementwise
+
+        # ReLU is excluded from fusion due to Choreo syntax limitations
+        # ReLU comparisons only work with direct data access, not arithmetic expressions
+        non_fusible_ops = {'relu'}
+
+        # Both operations must be elementwise and fusible
         if not (op1 in elementwise_ops and op2 in elementwise_ops):
             return False
-        
+
+        # Prevent fusion with ReLU
+        if op1 in non_fusible_ops or op2 in non_fusible_ops:
+            return False
+
         # Check for incompatible operation combinations
         incompatible_pairs = {
             # Division operations might have numerical stability issues when fused
             ('div', 'log'),  # log(x/y) might be unstable
             ('log', 'div'),  # log(x)/y might be unstable
         }
-        
+
         return (op1, op2) not in incompatible_pairs and (op2, op1) not in incompatible_pairs
         
     def estimate_fusion_benefit(self, nodes: List['ConductorNode']) -> float:

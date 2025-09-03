@@ -3,20 +3,27 @@
 // Source: torch.add(input1, input2)
 // Optimizations: Direct mapping, no fusion opportunities
 
-// Buffer declarations
-local input1: float32[batch_size, feature_size];
-local input2: float32[batch_size, feature_size];
-local output: float32[batch_size, feature_size];
+#include "choreo.h"
 
-// Function definition for elementwise addition
-function elementwise_add(
-    a: float32[N, D], 
-    b: float32[N, D]
-) -> float32[N, D] {
-    // Elementwise addition with broadcasting support
-    result = add(a, b);
-    return result;
+__co__ f32 [32, 64] elementwise_add(f32 [32, 64] input1, f32 [32, 64] input2) {
+  f32[input1.span(0), input1.span(1)] output;
+
+  parallel p by 2 {
+    with index = {m_tile, n_tile} in [4, 8] {
+      foreach m_tile, n_tile {
+        lhs_load = dma.copy.async input1.chunkat(p, m_tile, n_tile) => local;
+        rhs_load = dma.copy.async input2.chunkat(p, m_tile, n_tile) => local;
+        wait lhs_load, rhs_load;
+
+        local f32 [lhs_load.span] l1_out;
+
+        foreach i in [l1_out.span]
+          l1_out.at(i) = lhs_load.data.at(i) + rhs_load.data.at(i);
+
+        dma.copy l1_out => output.chunkat(p, m_tile, n_tile);
+      }
+    }
+  }
+
+  return output;
 }
-
-// Main execution
-output = elementwise_add(input1, input2);

@@ -8,7 +8,10 @@ and converting them to Conductor's internal DAG representation.
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 import torch
+import logging
 from .buffers import Buffer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,8 +40,9 @@ class ConductorNode:
             True if nodes can be safely fused, False otherwise
         """
         # Define fusible operation categories
+        # ReLU is excluded due to Choreo syntax limitations with comparisons
         elementwise_ops = {
-            'add', 'sub', 'mul', 'div', 'relu', 'sigmoid', 'tanh', 
+            'add', 'sub', 'mul', 'div', 'sigmoid', 'tanh',
             'abs', 'neg', 'exp', 'log', 'sqrt', 'sin', 'cos'
         }
         
@@ -290,7 +294,7 @@ class GraphAnalyzer:
         self._node_to_buffer = {}  # Maps FX nodes to output buffers
         self._buffer_to_node = {}  # Maps buffers to producing nodes
     
-    def parse_fx_graph(self, graph_module: torch.fx.GraphModule) -> ComputationDAG:
+    def parse_fx_graph(self, graph_module: torch.fx.GraphModule, example_inputs: Optional[List[torch.Tensor]] = None) -> ComputationDAG:
         """
         Convert FX Graph to internal DAG representation.
         
@@ -316,8 +320,8 @@ class GraphAnalyzer:
             if conductor_node:
                 dag.add_node(conductor_node)
         
-        # Identify inputs and outputs
-        self._identify_graph_inputs_outputs(graph_module.graph, dag)
+        # Identify inputs and outputs with shape information from example inputs
+        self._identify_graph_inputs_outputs(graph_module.graph, dag, example_inputs)
         
         # Analyze data dependencies
         self.identify_data_dependencies(dag)
@@ -606,18 +610,29 @@ class GraphAnalyzer:
         
         return dtype, shape
     
-    def _identify_graph_inputs_outputs(self, fx_graph: torch.fx.Graph, dag: ComputationDAG) -> None:
+    def _identify_graph_inputs_outputs(self, fx_graph: torch.fx.Graph, dag: ComputationDAG, example_inputs: Optional[List[torch.Tensor]] = None) -> None:
         """
         Identify input and output buffers of the graph.
-        
+
         Args:
             fx_graph: FX Graph
             dag: Computation DAG being built
+            example_inputs: Example input tensors for shape inference
         """
-        # Find input nodes (placeholders)
+        # Find input nodes (placeholders) and update their shapes from example inputs
+        input_index = 0
         for node in fx_graph.nodes:
             if node.op == 'placeholder' and node in self._node_to_buffer:
                 buffer = self._node_to_buffer[node]
+
+                # Update buffer shape from example inputs if available
+                if example_inputs and input_index < len(example_inputs):
+                    example_tensor = example_inputs[input_index]
+                    buffer.shape = tuple(example_tensor.shape)
+                    buffer.dtype = example_tensor.dtype
+                    logger.debug(f"Updated input buffer {buffer.name} shape to {buffer.shape} from example input")
+                    input_index += 1
+
                 dag.inputs.append(buffer)
         
         # Find output nodes
@@ -634,6 +649,14 @@ class GraphAnalyzer:
                     elif isinstance(arg, torch.fx.Node) and arg in self._node_to_buffer:
                         # Single output
                         buffer = self._node_to_buffer[arg]
+
+                        # Infer output shape from input shapes for element-wise operations
+                        if dag.inputs and not buffer.shape:
+                            # For element-wise operations, output shape matches input shape
+                            buffer.shape = dag.inputs[0].shape
+                            buffer.dtype = dag.inputs[0].dtype
+                            logger.debug(f"Inferred output buffer {buffer.name} shape to {buffer.shape} from input")
+
                         dag.outputs.append(buffer)
         
     def identify_data_dependencies(self, dag: ComputationDAG) -> None:

@@ -1,0 +1,22 @@
+// Generated Choreo DSL
+// Auto-generated from PyTorch FX Graph via Conductor
+
+#include "choreo.h"
+
+__co__ auto kernel_33f49944(f32 [16, 32] l_x_, f32 [16, 32] l_y_) {
+  f32 [16, 32] mul;
+  parallel p by 1
+    foreach index in [4] {
+      lf = dma.copy.async l_x_.chunkat(p, index) => local;
+      rf = dma.copy.async l_y_.chunkat(p, index) => local;
+      wait lf, rf;
+      
+      local f32 [lf.span] l1_out;
+      
+      foreach i in [l1_out.span]
+        l1_out.at(i) = lf.data.at(i) * rf.data.at(i);
+      
+      dma.copy l1_out => mul.chunkat(p, index);
+    }
+  return mul;
+}

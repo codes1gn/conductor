@@ -3,133 +3,80 @@
 // Source: torch.nn.MultiheadAttention forward pass
 // Optimizations: Attention pattern fusion, memory layout optimization
 
-// Buffer declarations
-local query: float32[batch_size, seq_len, d_model];
-local key: float32[batch_size, seq_len, d_model];
-local value: float32[batch_size, seq_len, d_model];
-local output: float32[batch_size, seq_len, d_model];
+#include "choreo.h"
 
-// Intermediate buffers with optimized scoping
-shared q_proj: float32[batch_size, num_heads, seq_len, head_dim];
-shared k_proj: float32[batch_size, num_heads, seq_len, head_dim];
-shared v_proj: float32[batch_size, num_heads, seq_len, head_dim];
-local attention_scores: float32[batch_size, num_heads, seq_len, seq_len];
-local attention_weights: float32[batch_size, num_heads, seq_len, seq_len];
-
-// Multi-head attention function
-function multihead_attention(
-    q: float32[B, S, D],
-    k: float32[B, S, D], 
-    v: float32[B, S, D],
-    w_q: float32[D, D],
-    w_k: float32[D, D],
-    w_v: float32[D, D],
-    w_o: float32[D, D],
-    num_heads: int,
-    head_dim: int
-) -> float32[B, S, D] {
-    
-    // Project inputs to query, key, value
-    q_linear = matmul(q, w_q);
-    k_linear = matmul(k, w_k);
-    v_linear = matmul(v, w_v);
-    
-    // Reshape for multi-head attention
-    q_heads = reshape(q_linear, [B, S, num_heads, head_dim]);
-    k_heads = reshape(k_linear, [B, S, num_heads, head_dim]);
-    v_heads = reshape(v_linear, [B, S, num_heads, head_dim]);
-    
-    // Transpose for attention computation
-    q_transposed = transpose(q_heads, dim1=1, dim2=2);  // [B, H, S, D]
-    k_transposed = transpose(k_heads, dim1=1, dim2=2);  // [B, H, S, D]
-    v_transposed = transpose(v_heads, dim1=1, dim2=2);  // [B, H, S, D]
-    
-    // Compute attention scores
-    scale = rsqrt(cast(head_dim, float32));
-    scores = matmul(q_transposed, transpose(k_transposed, dim1=-2, dim2=-1));
-    scaled_scores = mul(scores, scale);
-    
-    // Apply softmax to get attention weights
-    weights = softmax(scaled_scores, dim=-1);
-    
-    // Apply attention to values
-    attended = matmul(weights, v_transposed);  // [B, H, S, D]
-    
-    // Reshape back to original format
-    attended_reshaped = transpose(attended, dim1=1, dim2=2);  // [B, S, H, D]
-    attended_flat = reshape(attended_reshaped, [B, S, D]);
-    
-    // Final output projection
-    result = matmul(attended_flat, w_o);
-    
-    return result;
+__co__ f32 [8, 128, 512] multihead_attention(
+    f32 [8, 128, 512] query,
+    f32 [8, 128, 512] key, 
+    f32 [8, 128, 512] value
+) {
+  f32[query.span(0), query.span(1), query.span(2)] output;
+  
+  parallel p by 2 {
+    with index = {b_tile, s_tile, h_tile} in [2, 8, 8] {
+      foreach b_tile, s_tile {
+        // Load query, key, value chunks
+        q_load = dma.copy.async query.chunkat(p, b_tile, s_tile) => shared;
+        k_load = dma.copy.async key.chunkat(p, b_tile, s_tile) => shared;
+        v_load = dma.copy.async value.chunkat(p, b_tile, s_tile) => shared;
+        wait q_load, k_load, v_load;
+        
+        // Attention computation in local memory
+        parallel q by 8 { // num_heads
+          with index = {head_tile} in [1] {
+            foreach head_tile {
+              // Extract head-specific data
+              q_head_load = dma.copy.async q_load.data.chunkat(q, head_tile) => local;
+              k_head_load = dma.copy.async k_load.data.chunkat(q, head_tile) => local;
+              v_head_load = dma.copy.async v_load.data.chunkat(q, head_tile) => local;
+              wait q_head_load, k_head_load, v_head_load;
+              
+              // Local attention computation
+              local f32[q_head_load.span(0), k_head_load.span(0)] scores;
+              local f32[q_head_load.span(0), v_head_load.span(1)] attended;
+              
+              // Compute attention scores: Q * K^T
+              foreach {i, j, k} in [q_head_load.span(0), k_head_load.span(0), q_head_load.span(1)]
+                scores.at(i, j) += q_head_load.data.at(i, k) * k_head_load.data.at(j, k);
+              
+              // Apply scaling
+              f32 scale = 1.0 / sqrt(64.0); // head_dim = 64
+              foreach {i, j} in [scores.span(0), scores.span(1)]
+                scores.at(i, j) *= scale;
+              
+              // Softmax (simplified)
+              foreach i in [scores.span(0)] {
+                f32 max_val = scores.at(i, 0);
+                foreach j in [scores.span(1)]
+                  max_val = max_val > scores.at(i, j) ? max_val : scores.at(i, j);
+                
+                f32 sum_exp = 0.0;
+                foreach j in [scores.span(1)] {
+                  scores.at(i, j) = exp(scores.at(i, j) - max_val);
+                  sum_exp += scores.at(i, j);
+                }
+                
+                foreach j in [scores.span(1)]
+                  scores.at(i, j) /= sum_exp;
+              }
+              
+              // Apply attention to values: Attention * V
+              foreach {i, j, k} in [attended.span(0), attended.span(1), scores.span(1)]
+                attended.at(i, j) += scores.at(i, k) * v_head_load.data.at(k, j);
+              
+              // Store back to shared memory
+              attended_store = dma.copy.async attended => q_load.data.chunkat(q, head_tile);
+              wait attended_store;
+            }
+          }
+        }
+        
+        // Store final result
+        output_store = dma.copy.async q_load.data => output.chunkat(p, b_tile, s_tile);
+        wait output_store;
+      }
+    }
+  }
+  
+  return output;
 }
-
-// Optimized attention with fused operations
-function fused_attention(
-    q: float32[B, S, D],
-    k: float32[B, S, D], 
-    v: float32[B, S, D],
-    w_q: float32[D, D],
-    w_k: float32[D, D],
-    w_v: float32[D, D],
-    w_o: float32[D, D],
-    num_heads: int,
-    head_dim: int
-) -> float32[B, S, D] {
-    
-    // Fused projection and reshape
-    q_proj_reshaped = fused_linear_reshape(q, w_q, [B, num_heads, S, head_dim]);
-    k_proj_reshaped = fused_linear_reshape(k, w_k, [B, num_heads, S, head_dim]);
-    v_proj_reshaped = fused_linear_reshape(v, w_v, [B, num_heads, S, head_dim]);
-    
-    // Fused attention computation
-    scale = rsqrt(cast(head_dim, float32));
-    attention_output = fused_scaled_dot_product_attention(
-        q_proj_reshaped, 
-        k_proj_reshaped, 
-        v_proj_reshaped, 
-        scale
-    );
-    
-    // Fused reshape and output projection
-    result = fused_reshape_linear(attention_output, [B, S, D], w_o);
-    
-    return result;
-}
-
-// Helper function for fused linear + reshape
-function fused_linear_reshape(
-    input: float32[B, S, D_in],
-    weight: float32[D_in, D_out],
-    target_shape: int[]
-) -> float32[] {
-    linear_out = matmul(input, weight);
-    reshaped = reshape(linear_out, target_shape);
-    return reshaped;
-}
-
-// Helper function for fused scaled dot-product attention
-function fused_scaled_dot_product_attention(
-    q: float32[B, H, S, D],
-    k: float32[B, H, S, D],
-    v: float32[B, H, S, D],
-    scale: float32
-) -> float32[B, H, S, D] {
-    // Compute scaled attention scores
-    scores = matmul(q, transpose(k, dim1=-2, dim2=-1));
-    scaled_scores = mul(scores, scale);
-    
-    // Softmax and apply to values in one fused operation
-    weights = softmax(scaled_scores, dim=-1);
-    result = matmul(weights, v);
-    
-    return result;
-}
-
-// Main execution
-output = multihead_attention(
-    query, key, value,
-    weight_q, weight_k, weight_v, weight_o,
-    num_heads=8, head_dim=64
-);

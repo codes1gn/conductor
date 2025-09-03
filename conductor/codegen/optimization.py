@@ -600,8 +600,9 @@ class AdvancedFusionHeuristics:
     
     def _is_fusible_operation(self, op_name: str) -> bool:
         """Check if an operation is fusible."""
+        # ReLU is excluded due to Choreo syntax limitations
         fusible_ops = {
-            'add', 'mul', 'sub', 'div', 'relu', 'sigmoid', 'tanh', 'gelu',
+            'add', 'mul', 'sub', 'div', 'sigmoid', 'tanh', 'gelu',
             'exp', 'log', 'sqrt', 'pow', 'abs', 'neg', 'sum', 'mean'
         }
         return op_name in fusible_ops
