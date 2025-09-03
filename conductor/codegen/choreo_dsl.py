@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from .graph import ComputationDAG, ConductorNode
 from .buffers import Buffer, BufferScope
 from .fusion import FusionCluster
+from .unified_operators import FusionAwareDSLGenerator, get_operator_template
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -33,6 +34,7 @@ class ChoreoDSLGenerator:
         self.config = config or {}
         self.indent_level = 0
         self.indent_size = 2
+        self.fusion_dsl_generator = FusionAwareDSLGenerator()
         
         # Choreo type mapping
         self.dtype_map = {
@@ -273,19 +275,21 @@ class ChoreoDSLGenerator:
         return lines
 
     def _generate_single_operation_choreo(self, node: ConductorNode, input_vars: List[str], index_vars: str = "i") -> str:
-        """Generate Choreo code for a single operation following real patterns."""
-        if node.op_name == "add":
-            if len(input_vars) >= 2:
-                return f"l1_out.at({index_vars}) = {input_vars[0]}.data.at({index_vars}) + {input_vars[1]}.data.at({index_vars});"
-            else:
-                return f"l1_out.at({index_vars}) = {input_vars[0]}.data.at({index_vars}) + 1.0;"
+        """Generate Choreo code for a single operation using unified templates."""
+        # Check if we have a template for this operation
+        template = get_operator_template(node.op_name)
 
-        elif node.op_name == "mul":
-            if len(input_vars) >= 2:
+        if template and template.metadata.element_wise:
+            # Use template-based generation for element-wise operations
+            if node.op_name == "add" and len(input_vars) >= 2:
+                return f"l1_out.at({index_vars}) = {input_vars[0]}.data.at({index_vars}) + {input_vars[1]}.data.at({index_vars});"
+            elif node.op_name == "mul" and len(input_vars) >= 2:
                 return f"l1_out.at({index_vars}) = {input_vars[0]}.data.at({index_vars}) * {input_vars[1]}.data.at({index_vars});"
             else:
-                return f"l1_out.at({index_vars}) = {input_vars[0]}.data.at({index_vars}) * 2.0;"
+                # Fallback for single input operations
+                return f"l1_out.at({index_vars}) = {input_vars[0]}.data.at({index_vars});"
 
+        # Legacy operations without templates
         elif node.op_name == "relu":
             # TODO: Implement proper ReLU using device kernel approach
             # Current limitation: Choreo doesn't support inline comparisons in host DSL
@@ -297,14 +301,32 @@ class ChoreoDSLGenerator:
             return f"l1_out.at({index_vars}) = {input_vars[0]}.data.at({index_vars});"
 
     def _generate_fused_operations_choreo(self, nodes: List[ConductorNode], input_vars: List[str], index_vars: str = "i") -> str:
-        """Generate Choreo code for fused operations."""
-        # For now, handle fused operations as sequential steps to avoid Choreo syntax issues
-        # This is less optimal but more reliable
+        """Generate Choreo code for fused operations using unified templates."""
+        # Check if all operations can be fused using the unified system
+        op_names = [node.op_name for node in nodes]
 
-        lines = []
+        # Try to use unified fusion system
+        try:
+            # Check if operations are fusable using unified system
+            can_fuse = True
+            for i in range(len(op_names) - 1):
+                template1 = get_operator_template(op_names[i])
+                template2 = get_operator_template(op_names[i + 1])
+                if not (template1 and template2 and template1.can_fuse_with(template2)):
+                    can_fuse = False
+                    break
+
+            if can_fuse and len(op_names) <= 2:  # Limit to simple fusion for now
+                # Generate fused computation using unified system
+                return self._generate_unified_fused_computation(op_names, input_vars, index_vars)
+        except Exception:
+            # Fall back to legacy fusion
+            pass
+
+        # Legacy fusion for operations without templates or complex cases
         current_var = f"{input_vars[0]}.data.at({index_vars})"
 
-        # Process non-ReLU operations first
+        # Process operations sequentially
         for node in nodes:
             if node.op_name == "add":
                 current_var = f"({current_var} + 1.0)"
@@ -315,8 +337,6 @@ class ChoreoDSLGenerator:
         has_relu = any(node.op_name == "relu" for node in nodes)
 
         if has_relu:
-            # Use the exact pattern from _generate_single_operation_choreo that works
-            # Choreo allows comparison on data access expressions, not variables
             return f"""if (({current_var}) > 0.0)
                 l1_out.at({index_vars}) = ({current_var});
               else
@@ -324,9 +344,38 @@ class ChoreoDSLGenerator:
         else:
             return f"l1_out.at({index_vars}) = {current_var};"
 
+    def _generate_unified_fused_computation(self, op_names: List[str], input_vars: List[str], index_vars: str) -> str:
+        """Generate fused computation using unified operator system."""
+        if len(op_names) == 1:
+            return self._generate_single_operation_choreo_by_name(op_names[0], input_vars, index_vars)
+
+        # Handle specific fusion patterns
+        if op_names == ["add", "mul"] and len(input_vars) >= 2:
+            # (input0 + input1) * input0
+            return f"l1_out.at({index_vars}) = ({input_vars[0]}.data.at({index_vars}) + {input_vars[1]}.data.at({index_vars})) * {input_vars[0]}.data.at({index_vars});"
+
+        # Default: chain operations
+        current_var = f"{input_vars[0]}.data.at({index_vars})"
+        for op in op_names:
+            if op == "add":
+                current_var = f"({current_var} + 1.0)"
+            elif op == "mul":
+                current_var = f"({current_var} * 2.0)"
+
+        return f"l1_out.at({index_vars}) = {current_var};"
+
+    def _generate_single_operation_choreo_by_name(self, op_name: str, input_vars: List[str], index_vars: str) -> str:
+        """Generate single operation by name."""
+        if op_name == "add" and len(input_vars) >= 2:
+            return f"l1_out.at({index_vars}) = {input_vars[0]}.data.at({index_vars}) + {input_vars[1]}.data.at({index_vars});"
+        elif op_name == "mul" and len(input_vars) >= 2:
+            return f"l1_out.at({index_vars}) = {input_vars[0]}.data.at({index_vars}) * {input_vars[1]}.data.at({index_vars});"
+        else:
+            return f"l1_out.at({index_vars}) = {input_vars[0]}.data.at({index_vars});"
+
     def _can_fuse_operations(self, nodes: List[ConductorNode]) -> bool:
         """
-        Check if operations can be safely fused based on Choreo syntax limitations.
+        Check if operations can be safely fused using unified operator system.
 
         Args:
             nodes: List of nodes to check for fusion compatibility
@@ -334,12 +383,26 @@ class ChoreoDSLGenerator:
         Returns:
             True if operations can be fused, False otherwise
         """
-        # ReLU cannot be fused due to Choreo comparison syntax limitations
-        non_fusible_ops = {'relu'}
+        if len(nodes) <= 1:
+            return True
 
-        for node in nodes:
-            if node.op_name in non_fusible_ops:
-                return False
+        # Check using unified operator system first
+        op_names = [node.op_name for node in nodes]
+
+        # Check pairwise fusion compatibility
+        for i in range(len(op_names) - 1):
+            template1 = get_operator_template(op_names[i])
+            template2 = get_operator_template(op_names[i + 1])
+
+            if template1 and template2:
+                # Use unified system fusion check
+                if not template1.can_fuse_with(template2):
+                    return False
+            else:
+                # Fall back to legacy checks for operations without templates
+                non_fusible_ops = {'relu'}
+                if op_names[i] in non_fusible_ops or op_names[i + 1] in non_fusible_ops:
+                    return False
 
         return True
 

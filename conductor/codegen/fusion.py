@@ -13,6 +13,13 @@ from .buffers import Buffer
 if TYPE_CHECKING:
     from .graph import ConductorNode, ComputationDAG
 
+# Import unified operator system for fusion decisions
+try:
+    from .unified_operators import get_operator_template, get_fusion_metadata, can_operators_fuse
+    UNIFIED_OPERATORS_AVAILABLE = True
+except ImportError:
+    UNIFIED_OPERATORS_AVAILABLE = False
+
 
 class FusionType(Enum):
     """Categorizes different types of operation fusion."""
@@ -571,7 +578,7 @@ class FusionHeuristics:
     
     def can_fuse_elementwise(self, op1: str, op2: str) -> bool:
         """
-        Determine if two elementwise operations can be fused.
+        Determine if two elementwise operations can be fused using unified operator system.
 
         Args:
             op1: First operation name
@@ -580,13 +587,21 @@ class FusionHeuristics:
         Returns:
             True if operations can be fused, False otherwise
         """
+        # Try unified operator system first
+        if UNIFIED_OPERATORS_AVAILABLE:
+            try:
+                return can_operators_fuse(op1, op2)
+            except Exception:
+                # Fall back to legacy logic if unified system fails
+                pass
+
+        # Legacy fusion logic for operations without templates
         elementwise_ops = {
             'add', 'sub', 'mul', 'div', 'sigmoid', 'tanh',
             'abs', 'neg', 'exp', 'log', 'sqrt', 'sin', 'cos'
         }
 
         # ReLU is excluded from fusion due to Choreo syntax limitations
-        # ReLU comparisons only work with direct data access, not arithmetic expressions
         non_fusible_ops = {'relu'}
 
         # Both operations must be elementwise and fusible
@@ -599,51 +614,83 @@ class FusionHeuristics:
 
         # Check for incompatible operation combinations
         incompatible_pairs = {
-            # Division operations might have numerical stability issues when fused
-            ('div', 'log'),  # log(x/y) might be unstable
-            ('log', 'div'),  # log(x)/y might be unstable
+            ('div', 'log'), ('log', 'div'),  # Numerical stability issues
         }
 
         return (op1, op2) not in incompatible_pairs and (op2, op1) not in incompatible_pairs
         
     def estimate_fusion_benefit(self, nodes: List['ConductorNode']) -> float:
         """
-        Estimate performance benefit of fusing given nodes.
-        
+        Estimate performance benefit of fusing given nodes using unified operator metadata.
+
         Args:
             nodes: List of nodes to potentially fuse
-            
+
         Returns:
             Estimated benefit score (higher is better)
         """
         if len(nodes) <= 1:
             return 0.0
-        
+
         # Base benefit from kernel launch reduction
         kernel_launch_benefit = (len(nodes) - 1) * 0.3
-        
-        # Memory bandwidth benefit (more operations = better bandwidth utilization)
-        memory_benefit = min(len(nodes) * 0.1, 0.5)  # Cap at 0.5
-        
-        # Operation type specific benefits
+
+        # Memory bandwidth benefit
+        memory_benefit = min(len(nodes) * 0.1, 0.5)
+
+        # Use unified operator metadata if available
+        if UNIFIED_OPERATORS_AVAILABLE:
+            try:
+                return self._estimate_benefit_with_unified_metadata(nodes, kernel_launch_benefit, memory_benefit)
+            except Exception:
+                # Fall back to legacy logic
+                pass
+
+        # Legacy benefit estimation
         op_types = [node.op_name for node in nodes]
-        
+
         # Elementwise chains are highly beneficial
         elementwise_ops = {'add', 'sub', 'mul', 'div', 'relu', 'sigmoid', 'tanh', 'abs', 'neg'}
         elementwise_count = sum(1 for op in op_types if op in elementwise_ops)
         elementwise_benefit = elementwise_count * 0.15
-        
+
         # Reduction fusion is very beneficial
         reduction_ops = {'sum', 'mean', 'max', 'min'}
         has_reduction = any(op in reduction_ops for op in op_types)
         reduction_benefit = 0.4 if has_reduction else 0.0
-        
-        # Penalty for complex operations that are hard to fuse
+
+        # Penalty for complex operations
         complex_ops = {'matmul', 'conv2d', 'linear'}
         complex_count = sum(1 for op in op_types if op in complex_ops)
         complexity_penalty = complex_count * 0.2
-        
+
         total_benefit = kernel_launch_benefit + memory_benefit + elementwise_benefit + reduction_benefit - complexity_penalty
+        return max(0.0, total_benefit)
+
+    def _estimate_benefit_with_unified_metadata(self, nodes: List['ConductorNode'], base_kernel_benefit: float, base_memory_benefit: float) -> float:
+        """Estimate fusion benefit using unified operator metadata."""
+        total_benefit = base_kernel_benefit + base_memory_benefit
+
+        # Analyze each operation using unified metadata
+        for node in nodes:
+            metadata = get_fusion_metadata(node.op_name)
+            if metadata:
+                # Element-wise operations are highly fusable
+                if metadata.element_wise:
+                    total_benefit += 0.15
+
+                # Memory-bound operations benefit more from fusion
+                if metadata.memory_bound:
+                    total_benefit += 0.1
+
+                # Higher compute intensity operations benefit less
+                compute_penalty = max(0, (metadata.compute_intensity - 1.0) * 0.05)
+                total_benefit -= compute_penalty
+
+                # Use fusion priority
+                priority_bonus = (metadata.fusion_priority - 1) * 0.05
+                total_benefit += priority_bonus
+
         return max(0.0, total_benefit)
         
     def check_memory_constraints(self, cluster: FusionCluster) -> bool:
