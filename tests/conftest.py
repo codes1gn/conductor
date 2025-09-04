@@ -14,13 +14,13 @@ from unittest.mock import Mock, patch
 from typing import Dict, Any, List, Optional
 
 import conductor
-from conductor.codegen.buffers import Buffer, BufferScope, BufferManager
-from conductor.codegen.graph import ConductorNode, ComputationDAG, GraphAnalyzer
-from conductor.codegen.fusion import FusionCluster, FusionEngine
-from conductor.codegen.dsl import DSLGenerator
-from conductor.runtime.jit import JITCompiler
-from conductor.runtime.aot import AOTManager
-from conductor.runtime.loader import CompiledArtifact, ExecutableKernel
+from conductor.buffers import Buffer, BufferScope, BufferManager
+from conductor.graph_analyzer import ConductorNode, ComputationDAG, GraphAnalyzer
+from conductor.fusion import FusionCluster, FusionEngine
+from conductor.dslgen import DSLGenerator
+from conductor.choreo_jit import JITCompiler
+from conductor.aot import AOTManager
+from conductor.loader import CompiledArtifact, ExecutableKernel
 
 
 # Test configuration
@@ -179,6 +179,7 @@ def dsl_generator():
 @pytest.fixture
 def jit_compiler(temp_test_dir):
     """Create a JITCompiler instance with temporary cache directory."""
+    from conductor.choreo_jit import JITCompiler
     return JITCompiler(cache_dir=temp_test_dir)
 
 

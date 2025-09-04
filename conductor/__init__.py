@@ -23,13 +23,13 @@ __author__ = "Conductor Team"
 __email__ = "conductor@example.com"
 
 # Public API exports
-from .backend import (
+from .gcu_backend import (
     register_backend,
     GCUInductorBackend,
     is_backend_registered,
     get_backend_info,
     list_supported_operations,
-    configure_backend
+    get_global_gcu_backend
 )
 
 __all__ = [
@@ -38,7 +38,7 @@ __all__ = [
     "is_backend_registered",
     "get_backend_info",
     "list_supported_operations",
-    "configure_backend",
+    "get_global_gcu_backend",
 ]
 
 # Automatically register the backend when the package is imported

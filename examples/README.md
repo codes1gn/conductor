@@ -8,6 +8,7 @@ Concise examples demonstrating PyTorch with GCU acceleration through the Conduct
 - **`mul_example.py`** - Element-wise multiplication (x * y)
 - **`add_mul_fused_example.py`** - Fused operations ((x + y) * z)
 - **`custom_operations.py`** - Custom operator registration and usage
+- **`subgraph_to_choreo_example.py`** - Complete subgraph compilation to Choreo DSL
 
 ## Requirements
 
