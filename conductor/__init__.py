@@ -23,27 +23,28 @@ __author__ = "Conductor Team"
 __email__ = "conductor@example.com"
 
 # Public API exports
-from .gcu_backend import (
-    register_backend,
-    GCUInductorBackend,
-    is_backend_registered,
-    get_backend_info,
-    list_supported_operations,
-    get_global_gcu_backend
+from .compiler.gcu_backend import (
+    register_gcu_backend,
+    GCUBackend,
+    get_gcu_backend
+)
+
+from .config import (
+    get_config,
+    ConductorConfig
 )
 
 __all__ = [
-    "register_backend",
-    "GCUInductorBackend",
-    "is_backend_registered",
-    "get_backend_info",
-    "list_supported_operations",
-    "get_global_gcu_backend",
+    "register_gcu_backend",
+    "GCUBackend",
+    "get_gcu_backend",
+    "get_config",
+    "ConductorConfig",
 ]
 
 # Automatically register the backend when the package is imported
 try:
-    register_backend()
+    register_gcu_backend()
 except Exception as e:
     import warnings
     warnings.warn(f"Failed to register Conductor backend: {e}", UserWarning)

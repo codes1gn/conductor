@@ -10,7 +10,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-from conductor.codegen.graph import GraphAnalyzer
+from conductor.graph.graph_analyzer import GraphAnalyzer
 
 
 class SimpleModel(nn.Module):

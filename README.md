@@ -127,9 +127,26 @@ The `examples/` directory contains comprehensive examples:
 The `samples/` directory contains example Choreo DSL files showing how PyTorch operations are impl'd by 
 Choreo Language:
 
-- **Elementwise Operations** - Basic operations like add, mul, relu
-- **Fused Operations** - Optimized fusion patterns
+- **Elementwise Operations** - Basic operations like add, mul
+- **Fused Operations** - Optimized fusion patterns like mul_add
 - **Complex Patterns** - Advanced operations like attention mechanisms
+
+## Configuration
+
+Conductor uses a simplified configuration system with JSON/YAML files:
+
+```python
+import conductor
+
+# Get configuration
+config = conductor.get_config()
+
+# Enable debug mode
+config.debug.enabled = True
+config.save_config()
+```
+
+Configuration files are located in `conductor/config/` directory. See [conductor/config/README.md](conductor/config/README.md) for details.
 
 ## Support
 

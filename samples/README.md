@@ -9,16 +9,15 @@ samples/
 ├── elementwise/          # Elementwise operation examples
 │   ├── add.co           # Addition operation
 │   ├── mul.co           # Multiplication operation
-│   ├── relu.co          # ReLU activation
 │   └── gelu.co          # GELU activation
 ├── reduction/           # Reduction operation examples
 │   ├── sum.co           # Sum reduction
 │   ├── mean.co          # Mean reduction
 │   └── max.co           # Max reduction
 ├── fused/              # Fused operation examples
-│   ├── add_relu.co     # Fused addition + ReLU
+│   ├── mul_add.co      # Fused multiplication + addition
 │   ├── linear_gelu.co  # Fused linear + GELU
-│   └── conv_bn_relu.co # Fused convolution + batch norm + ReLU
+│   └── conv_bn_gelu.co # Fused convolution + batch norm + GELU
 ├── complex/            # Complex operation patterns
 │   ├── attention.co    # Multi-head attention
 │   ├── layer_norm.co   # Layer normalization

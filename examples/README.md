@@ -23,17 +23,29 @@ Concise examples demonstrating PyTorch with GCU acceleration through the Conduct
 # Verify choreo compiler
 choreo --help
 
-# Install conductor
+# Install conductor (from project root)
 pip install -e .
 ```
 
 ## Usage
 
+Run examples from the project root directory:
+
 ```bash
-python3 examples/add_example.py
-python3 examples/mul_example.py
-python3 examples/add_mul_fused_example.py
-python3 examples/custom_operations.py
+python -m examples.add_example
+python -m examples.mul_example
+python -m examples.add_mul_fused_example
+python -m examples.custom_op_example
+python -m examples.subgraph_example
+```
+
+Or run directly:
+```bash
+python examples/add_example.py
+python examples/mul_example.py
+python examples/add_mul_fused_example.py
+python examples/custom_op_example.py
+python examples/subgraph_example.py
 ```
 
 ## Features

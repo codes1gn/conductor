@@ -28,7 +28,26 @@ GLOBAL RULES for AUGGIE/AUGMENT CODE IDE
 - WHEN init new project, Follow an incremental development approach:
   - BEGIN with a minimal viable implementation (MVP).
 
-5. Code Submission & Test-Fix Behavior
+5. Shell Command Result Verification & Error Detection
+- **MANDATORY**: Always carefully read the ENTIRE output of shell commands, including return codes, error messages, and warnings
+- **NEVER** assume success based on partial output or wishful thinking
+- **ERROR DETECTION PROTOCOL**: If ANY of the following appear in command output, treat as FAILURE and debug:
+  - Non-zero return codes
+  - Error messages (containing "error", "failed", "exception", "traceback")
+  - Warning messages that indicate problems
+  - Empty or truncated output when content was expected
+  - Import errors or module not found messages
+  - Stack traces or Python exceptions
+- **DEBUGGING REQUIREMENT**: When a command fails, you MUST:
+  - Analyze the specific error message
+  - Identify the root cause
+  - Attempt to fix the issue
+  - Re-run the command to verify the fix
+  - Only mark tasks complete after verified success
+- **NO FALSE COMPLETION**: Never mark tasks as "PASSED" or "COMPLETE" based on wishful thinking or partial success
+- **REQUIRE CONCRETE EVIDENCE**: Demand concrete evidence of full functionality before marking anything as complete
+
+6. Code Submission & Test-Fix Behavior
 - ALWAYS cleaning up smoke test script or temporal files, UNLESS user ask to keep the document.
 - If the user requests code submission:
   - Always attempt to fix failing tests before committing code.

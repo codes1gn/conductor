@@ -10,9 +10,9 @@ import torch
 import logging
 from typing import Dict, List, Optional, Callable, Any
 from dataclasses import dataclass
-from .operator_registry import (
-    OperatorTemplate, OperatorMetadata, ParallelStructure,
-    BufferSpec, unified_registry
+from .codegen.operator_registry import (
+    OperatorInfo as OperatorTemplate, OperatorMetadata, ParallelStructure,
+    BufferSpec, operator_registry
 )
 
 logger = logging.getLogger(__name__)
@@ -46,14 +46,20 @@ class CustomOperatorRegistry:
         self.custom_ops[spec.name] = spec
         self.torch_ops[spec.torch_op] = spec.name
         
-        # Register with the unified operator registry for DSL generation
+        # Register with the operator registry for DSL generation
+        from .codegen.operator_registry import OpType
         operator_template = OperatorTemplate(
             name=spec.name,
+            canonical_name=spec.name,
+            operation_type=OpType.ELEMENTWISE,  # Default for custom ops
+            fusable=spec.metadata.fusable if spec.metadata else True,
+            memory_bound=spec.metadata.memory_bound if spec.metadata else True,
+            compute_intensity=spec.metadata.compute_intensity if spec.metadata else 1.0,
             template=spec.template,
             metadata=spec.metadata,
             parameter_substitutions=spec.parameter_substitutions or {}
         )
-        unified_registry.register_operator(operator_template)
+        operator_registry.register_operation(operator_template)
         
         logger.info(f"Registered custom operator: {spec.name}")
     
@@ -205,7 +211,7 @@ def enhance_operation_name_extraction():
     Enhance the existing operation name extraction to support custom operations.
     This function patches the graph analyzer to recognize custom operations.
     """
-    from .graph_analyzer import GraphAnalyzer
+    from .graph.graph_analyzer import GraphAnalyzer
     
     # Store the original method
     original_extract_operation_name = GraphAnalyzer._extract_operation_name

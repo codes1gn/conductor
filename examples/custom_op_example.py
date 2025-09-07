@@ -12,13 +12,12 @@ import time
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import conductor
 from conductor.custom_ops import (
     register_custom_operator, create_torch_custom_op,
     custom_op_registry, CustomOperatorSpec
 )
-from conductor.operator_registry import (
+from conductor.codegen.operator_registry import (
     OperatorMetadata, ParallelStructure, BufferSpec
 )
 
