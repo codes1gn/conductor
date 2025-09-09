@@ -19,12 +19,98 @@ from typing import Optional, Any
 
 class MemoryLevel(Enum):
     """Memory hierarchy levels in GCU architecture."""
-    
+
     GLOBAL = "global"  # Global memory (DDR)
     L2 = "l2"  # L2 cache
     L1 = "l1"  # L1 cache/local memory
     REGISTER = "reg"  # Register file
 
+    @property
+    def priority(self) -> int:
+        """Return fusion priority (higher = more preferred for local fusion)."""
+        priorities = {
+            MemoryLevel.REGISTER: 4,
+            MemoryLevel.L1: 3,
+            MemoryLevel.L2: 2,
+            MemoryLevel.GLOBAL: 1
+        }
+        return priorities.get(self, 0)
+
+    def can_fuse_with(self, other: 'MemoryLevel') -> bool:
+        """Check if operations at this memory level can fuse with another level."""
+        # Prefer fusion within the same memory level
+        if self == other:
+            return True
+        # Allow fusion between adjacent levels
+        level_order = [MemoryLevel.REGISTER, MemoryLevel.L1, MemoryLevel.L2, MemoryLevel.GLOBAL]
+        try:
+            self_idx = level_order.index(self)
+            other_idx = level_order.index(other)
+            return abs(self_idx - other_idx) <= 1
+        except ValueError:
+            return False
+
+
+# =============================================================================
+# Tensor Rank and Fusion Level Constants
+# =============================================================================
+
+class TensorRank(Enum):
+    """Tensor dimensionality classifications for optimized fusion."""
+
+    SCALAR = 0  # 0D tensors
+    VECTOR = 1  # 1D tensors
+    MATRIX = 2  # 2D tensors
+    TENSOR_3D = 3  # 3D tensors
+    TENSOR_ND = 4  # 4D+ tensors
+
+    @classmethod
+    def from_shape(cls, shape: tuple) -> 'TensorRank':
+        """Determine tensor rank from shape tuple."""
+        if not shape:
+            return cls.SCALAR
+        elif len(shape) == 1:
+            return cls.VECTOR
+        elif len(shape) == 2:
+            return cls.MATRIX
+        elif len(shape) == 3:
+            return cls.TENSOR_3D
+        else:
+            return cls.TENSOR_ND
+
+    def get_index_pattern(self) -> list[str]:
+        """Get appropriate index variable pattern for this tensor rank."""
+        patterns = {
+            TensorRank.SCALAR: [],
+            TensorRank.VECTOR: ["i"],
+            TensorRank.MATRIX: ["i", "j"],
+            TensorRank.TENSOR_3D: ["i", "j", "k"],
+            TensorRank.TENSOR_ND: ["i", "j", "k", "l"]
+        }
+        return patterns.get(self, ["i"])
+
+
+class FusionLevel(Enum):
+    """Fusion execution levels prioritizing local computation."""
+
+    LOCAL = "local"  # Within same memory level, highest priority
+    ADJACENT = "adjacent"  # Between adjacent memory levels
+    GLOBAL = "global"  # Cross-level fusion, lowest priority
+
+    @property
+    def priority(self) -> int:
+        """Return fusion priority (higher = more preferred)."""
+        priorities = {
+            FusionLevel.LOCAL: 3,
+            FusionLevel.ADJACENT: 2,
+            FusionLevel.GLOBAL: 1
+        }
+        return priorities.get(self, 0)
+
+
+# =============================================================================
+# Buffer Management Constants
+# =============================================================================
 
 class BufferScope(Enum):
     """Defines memory scope hierarchy for buffer management."""

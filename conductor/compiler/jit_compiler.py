@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any, List
 import torch
 from .loader import CompiledArtifact, ExecutableKernel
 from ..optimization.graph_analyzer import GraphAnalyzer
-from ..optimization.fusion import FusionEngine
+from ..optimization.fusion import FusionEngine, LocalPriorityFusionEngine
 from ..codegen.dslgen import ChoreoDslGen
 from ..utils.exceptions import CompilationError, UnsupportedOperationError
 from ..utils.logging import get_logger
@@ -52,7 +52,7 @@ class ChoreoJITCompiler:
             max_cache_size_mb or cache_config.max_size_mb
         )
         self._graph_analyzer = GraphAnalyzer()
-        self._fusion_engine = FusionEngine()
+        self._fusion_engine = LocalPriorityFusionEngine()  # Use improved fusion engine
         self._dsl_generator = ChoreoDslGen()
 
         # Get compilation timeout from config

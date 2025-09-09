@@ -10,10 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple
+import logging
 
 from .buffers import Buffer, BufferScope
 from .graph_nodes import ConductorNode
 from .graph_analyzer import ComputationDAG
+from ..utils.constants import MemoryLevel, TensorRank, FusionLevel
 
 # Import unified operator system for fusion decisions
 try:
@@ -299,6 +302,291 @@ class FusionCluster:
             1.0 + kernel_launch_savings + memory_locality_gain + type_gain - complexity_penalty
         )
         return max(1.0, total_gain)  # Ensure gain is at least 1.0 (no loss)
+
+    def get_fusion_priority(self) -> int:
+        """Get fusion priority based on fusion level and characteristics."""
+        base_priority = 0
+
+        # Priority based on fusion level
+        if hasattr(self, 'fusion_level'):
+            base_priority = self.fusion_level.priority * 100
+        else:
+            # Infer fusion level from cluster characteristics
+            if self._is_local_fusion():
+                base_priority = FusionLevel.LOCAL.priority * 100
+            elif self._is_adjacent_fusion():
+                base_priority = FusionLevel.ADJACENT.priority * 100
+            else:
+                base_priority = FusionLevel.GLOBAL.priority * 100
+
+        # Bonus for elementwise operations (easier to fuse)
+        if self.cluster_type == FusionType.ELEMENTWISE:
+            base_priority += 20
+
+        # Bonus for more nodes (better kernel launch savings)
+        base_priority += len(self.nodes) * 5
+
+        return base_priority
+
+    def _is_local_fusion(self) -> bool:
+        """Check if this is a local fusion (same memory level)."""
+        if not self.nodes:
+            return False
+
+        # Check if all nodes prefer the same memory level
+        memory_levels = set()
+        for node in self.nodes:
+            # Simple heuristic: elementwise operations prefer L1
+            if hasattr(node, 'op_name') and node.op_name in ['add', 'mul', 'sub', 'div']:
+                memory_levels.add(MemoryLevel.L1)
+            else:
+                memory_levels.add(MemoryLevel.L2)
+
+        return len(memory_levels) == 1
+
+    def _is_adjacent_fusion(self) -> bool:
+        """Check if this is adjacent fusion (neighboring memory levels)."""
+        if not self.nodes or len(self.nodes) < 2:
+            return False
+
+        # For now, assume any multi-node fusion that's not local is adjacent
+        return not self._is_local_fusion()
+
+
+class LocalPriorityFusionEngine:
+    """
+    Enhanced fusion engine that prioritizes local-level fusion.
+
+    This engine implements a hierarchical fusion strategy:
+    1. Local fusion within same memory level (highest priority)
+    2. Adjacent fusion between neighboring memory levels
+    3. Global fusion across different levels (lowest priority)
+    """
+
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+
+    def identify_fusion_opportunities(self, dag: ComputationDAG) -> list[FusionCluster]:
+        """
+        Find fusion opportunities with local-level priority.
+
+        Args:
+            dag: Computation DAG to analyze
+
+        Returns:
+            List of fusion clusters ordered by priority
+        """
+        clusters = []
+        visited_nodes = set()
+
+        # Phase 1: Local-level fusion (highest priority)
+        local_clusters = self._find_local_fusion_opportunities(dag, visited_nodes)
+        clusters.extend(local_clusters)
+
+        # Phase 2: Adjacent-level fusion
+        adjacent_clusters = self._find_adjacent_fusion_opportunities(dag, visited_nodes)
+        clusters.extend(adjacent_clusters)
+
+        # Phase 3: Global-level fusion (fallback)
+        global_clusters = self._find_global_fusion_opportunities(dag, visited_nodes)
+        clusters.extend(global_clusters)
+
+        # Sort by fusion priority and benefit
+        clusters.sort(key=lambda c: (c.get_fusion_priority(), c.estimate_performance_gain()), reverse=True)
+
+        return clusters
+
+    def _find_local_fusion_opportunities(self, dag: ComputationDAG, visited_nodes: set) -> list[FusionCluster]:
+        """Find fusion opportunities within the same memory level."""
+        clusters = []
+
+        # Group nodes by their preferred memory level and tensor rank
+        memory_groups = self._group_nodes_by_memory_level(dag.nodes, visited_nodes)
+
+        for memory_level, rank_groups in memory_groups.items():
+            for tensor_rank, nodes in rank_groups.items():
+                if len(nodes) > 1:
+                    # Find fusible chains within this group
+                    local_clusters = self._find_fusible_chains_in_group(nodes, memory_level, tensor_rank)
+                    for cluster in local_clusters:
+                        if cluster.validate_fusion_safety():
+                            clusters.append(cluster)
+                            visited_nodes.update(cluster.nodes)
+
+        return clusters
+
+    def _group_nodes_by_memory_level(self, nodes: list[ConductorNode], visited_nodes: set) -> Dict[MemoryLevel, Dict[TensorRank, list[ConductorNode]]]:
+        """Group nodes by their preferred memory level and tensor rank."""
+        groups = {}
+
+        for node in nodes:
+            if node in visited_nodes:
+                continue
+
+            # Determine node's tensor rank
+            tensor_rank = self._get_node_tensor_rank(node)
+
+            # Determine preferred memory level
+            memory_level = self._get_preferred_memory_level(node, tensor_rank)
+
+            if memory_level not in groups:
+                groups[memory_level] = {}
+            if tensor_rank not in groups[memory_level]:
+                groups[memory_level][tensor_rank] = []
+
+            groups[memory_level][tensor_rank].append(node)
+
+        return groups
+
+    def _get_node_tensor_rank(self, node: ConductorNode) -> TensorRank:
+        """Determine the tensor rank for a node."""
+        if node.outputs and node.outputs[0].shape:
+            return TensorRank.from_shape(node.outputs[0].shape)
+        elif node.inputs and node.inputs[0].shape:
+            return TensorRank.from_shape(node.inputs[0].shape)
+        else:
+            return TensorRank.MATRIX  # Default fallback
+
+    def _get_preferred_memory_level(self, node: ConductorNode, tensor_rank: TensorRank) -> MemoryLevel:
+        """Get the preferred memory level for a node at a specific tensor rank."""
+        # Try to get from operator registry
+        try:
+            from ..codegen.operator_registry import get_operator_registry
+            registry = get_operator_registry()
+            op_info = registry.get_operation(node.op_name)
+            if op_info:
+                preferred_levels = op_info.get_preferred_memory_levels(tensor_rank)
+                if preferred_levels:
+                    # Map string to MemoryLevel enum
+                    level_map = {"l1": MemoryLevel.L1, "l2": MemoryLevel.L2, "global": MemoryLevel.GLOBAL}
+                    return level_map.get(preferred_levels[0], MemoryLevel.L1)
+        except:
+            pass
+
+        # Default heuristics based on tensor rank
+        if tensor_rank == TensorRank.VECTOR:
+            return MemoryLevel.L1  # Small vectors prefer L1
+        elif tensor_rank == TensorRank.MATRIX:
+            return MemoryLevel.L1  # Matrices can fit in L1
+        else:
+            return MemoryLevel.L2  # Larger tensors prefer L2
+
+    def _find_fusible_chains_in_group(self, nodes: list[ConductorNode], memory_level: MemoryLevel, tensor_rank: TensorRank) -> list[FusionCluster]:
+        """Find fusible chains within a group of nodes at the same memory level and tensor rank."""
+        clusters = []
+        visited = set()
+
+        for node in nodes:
+            if node in visited:
+                continue
+
+            # Find chain starting from this node
+            chain = self._build_fusion_chain(node, nodes, visited, tensor_rank)
+            if len(chain) > 1:
+                cluster = FusionCluster(
+                    nodes=chain,
+                    cluster_type=self._determine_cluster_type(chain),
+                )
+                cluster.fusion_level = FusionLevel.LOCAL
+                clusters.append(cluster)
+                visited.update(chain)
+
+        return clusters
+
+    def _build_fusion_chain(self, start_node: ConductorNode, available_nodes: list[ConductorNode], visited: set, tensor_rank: TensorRank) -> list[ConductorNode]:
+        """Build a fusion chain starting from a node."""
+        chain = [start_node]
+        visited.add(start_node)
+
+        # Look for compatible nodes that can be fused
+        for node in available_nodes:
+            if node in visited:
+                continue
+
+            if self._can_fuse_nodes_at_rank(start_node, node, tensor_rank):
+                # Check if node can be added to chain
+                if self._can_add_to_chain(chain, node, tensor_rank):
+                    chain.append(node)
+                    visited.add(node)
+
+        return chain
+
+    def _can_fuse_nodes_at_rank(self, node1: ConductorNode, node2: ConductorNode, tensor_rank: TensorRank) -> bool:
+        """Check if two nodes can be fused at a specific tensor rank."""
+        try:
+            from ..codegen.operator_registry import get_operator_registry
+            registry = get_operator_registry()
+
+            op1_info = registry.get_operation(node1.op_name)
+            op2_info = registry.get_operation(node2.op_name)
+
+            if op1_info and op2_info:
+                return op1_info.can_fuse_with_rank(op2_info, tensor_rank)
+        except:
+            pass
+
+        # Fallback to basic compatibility
+        return self._basic_fusion_compatibility(node1, node2)
+
+    def _basic_fusion_compatibility(self, node1: ConductorNode, node2: ConductorNode) -> bool:
+        """Basic fusion compatibility check."""
+        elementwise_ops = {'add', 'mul', 'sub', 'div'}
+        return node1.op_name in elementwise_ops and node2.op_name in elementwise_ops
+
+    def _can_add_to_chain(self, chain: list[ConductorNode], node: ConductorNode, tensor_rank: TensorRank) -> bool:
+        """Check if a node can be added to an existing fusion chain."""
+        # For now, simple check - node should be compatible with last node in chain
+        if not chain:
+            return True
+
+        last_node = chain[-1]
+        return self._can_fuse_nodes_at_rank(last_node, node, tensor_rank)
+
+    def _determine_cluster_type(self, nodes: list[ConductorNode]) -> FusionType:
+        """Determine the fusion type for a cluster of nodes."""
+        if not nodes:
+            return FusionType.ELEMENTWISE
+
+        # Check if all nodes are elementwise
+        elementwise_ops = {'add', 'mul', 'sub', 'div'}
+        if all(node.op_name in elementwise_ops for node in nodes):
+            return FusionType.ELEMENTWISE
+
+        # Check for reduction operations
+        reduction_ops = {'reduce_mean', 'sum', 'max', 'min'}
+        if any(node.op_name in reduction_ops for node in nodes):
+            return FusionType.REDUCTION
+
+        return FusionType.ELEMENTWISE  # Default
+
+    def _find_adjacent_fusion_opportunities(self, dag: ComputationDAG, visited_nodes: set) -> list[FusionCluster]:
+        """Find fusion opportunities between adjacent memory levels."""
+        # For now, return empty list - can be implemented later
+        return []
+
+    def _find_global_fusion_opportunities(self, dag: ComputationDAG, visited_nodes: set) -> list[FusionCluster]:
+        """Find global fusion opportunities as fallback."""
+        # Delegate to original fusion engine for global opportunities
+        original_engine = FusionEngine()
+        return original_engine.identify_fusion_opportunities(dag)
+
+    def optimize_buffer_usage(self, cluster: FusionCluster) -> None:
+        """Optimize buffer usage for fusion clusters."""
+        # Delegate to original fusion engine for buffer optimization
+        original_engine = FusionEngine()
+        return original_engine.optimize_buffer_usage(cluster)
+
+    def apply_elementwise_fusion(self, nodes: list[ConductorNode]) -> FusionCluster:
+        """Apply elementwise fusion to a group of nodes."""
+        # Delegate to original fusion engine
+        original_engine = FusionEngine()
+        return original_engine.apply_elementwise_fusion(nodes)
+
+    def apply_reduction_fusion(self, nodes: list[ConductorNode]) -> FusionCluster:
+        """Apply reduction fusion to a group of nodes."""
+        # Delegate to original fusion engine
+        original_engine = FusionEngine()
+        return original_engine.apply_reduction_fusion(nodes)
 
 
 class FusionEngine:

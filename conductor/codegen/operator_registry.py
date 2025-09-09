@@ -8,12 +8,40 @@ properties, DSL templates, and metadata in one place.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Any, Callable
+from typing import Optional, Any, Callable, Dict, List
 from enum import Enum
 import logging
 import torch
 
+from ..utils.constants import TensorRank, FusionLevel
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RankSpecificVariant:
+    """Defines operation behavior for a specific tensor rank."""
+
+    tensor_rank: TensorRank
+    code_template: str
+    index_pattern: List[str] = field(default_factory=list)
+    memory_level_preference: List[str] = field(default_factory=lambda: ["l1", "l2", "global"])
+    fusion_compatibility: Dict[TensorRank, bool] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Initialize default values based on tensor rank."""
+        if not self.index_pattern:
+            self.index_pattern = self.tensor_rank.get_index_pattern()
+
+        # Default fusion compatibility - same rank operations can fuse
+        if not self.fusion_compatibility:
+            self.fusion_compatibility = {
+                TensorRank.SCALAR: True,
+                TensorRank.VECTOR: self.tensor_rank == TensorRank.VECTOR,
+                TensorRank.MATRIX: self.tensor_rank == TensorRank.MATRIX,
+                TensorRank.TENSOR_3D: self.tensor_rank == TensorRank.TENSOR_3D,
+                TensorRank.TENSOR_ND: self.tensor_rank == TensorRank.TENSOR_ND,
+            }
 
 
 @dataclass
@@ -84,10 +112,14 @@ class OperatorInfo:
     code_gen_fn: Optional[Callable] = None  # Custom code generation function
     parameter_substitutions: dict[str, str] = field(default_factory=dict)  # Parameter substitutions
 
+    # Multi-rank support
+    rank_variants: Dict[TensorRank, RankSpecificVariant] = field(default_factory=dict)
+
     # Operation properties
     operation_type: OpType = OpType.ELEMENTWISE
     requires_device_kernel: bool = False
     fusable: bool = True
+    preferred_fusion_level: FusionLevel = FusionLevel.LOCAL
 
     def get_input_buffer_specs(self) -> list[BufferSpec]:
         """Get input buffer specifications."""
@@ -97,6 +129,32 @@ class OperatorInfo:
         """Get output buffer specifications."""
         return self.output_buffers
 
+    def get_rank_variant(self, tensor_rank: TensorRank) -> Optional[RankSpecificVariant]:
+        """Get rank-specific variant for this operation."""
+        return self.rank_variants.get(tensor_rank)
+
+    def can_fuse_with_rank(self, other_op: 'OperatorInfo', tensor_rank: TensorRank) -> bool:
+        """Check if this operation can fuse with another at a specific tensor rank."""
+        if not self.fusable or not other_op.fusable:
+            return False
+
+        # Check rank-specific compatibility
+        self_variant = self.get_rank_variant(tensor_rank)
+        other_variant = other_op.get_rank_variant(tensor_rank)
+
+        if self_variant and other_variant:
+            return self_variant.fusion_compatibility.get(tensor_rank, False)
+
+        # Fallback to general compatibility
+        return self.operation_type == other_op.operation_type
+
+    def get_preferred_memory_levels(self, tensor_rank: TensorRank) -> List[str]:
+        """Get preferred memory levels for this operation at a specific rank."""
+        variant = self.get_rank_variant(tensor_rank)
+        if variant:
+            return variant.memory_level_preference
+        return ["l1", "l2", "global"]  # Default preference
+
     def generate_code(
         self,
         input_vars: list[str],
@@ -105,15 +163,38 @@ class OperatorInfo:
         tensor_rank: int = 2,
     ) -> str:
         """Generate code for this operation with proper multi-dimensional indexing."""
-        if index_vars is None:
-            index_vars = ["i", "j"]  # Default for 2D tensors
+        # Convert int tensor_rank to TensorRank enum
+        rank_enum = TensorRank.MATRIX  # Default
+        if tensor_rank == 0:
+            rank_enum = TensorRank.SCALAR
+        elif tensor_rank == 1:
+            rank_enum = TensorRank.VECTOR
+        elif tensor_rank == 2:
+            rank_enum = TensorRank.MATRIX
+        elif tensor_rank == 3:
+            rank_enum = TensorRank.TENSOR_3D
+        else:
+            rank_enum = TensorRank.TENSOR_ND
+
+        # Check for rank-specific variant first
+        variant = self.get_rank_variant(rank_enum)
+        if variant:
+            # Use rank-specific template and index pattern
+            template = variant.code_template
+            if index_vars is None:
+                index_vars = variant.index_pattern
+        else:
+            # Fallback to default template
+            template = self.code_template
+            if index_vars is None:
+                index_vars = rank_enum.get_index_pattern()
 
         # Generate proper multi-dimensional index string
-        index_str = ", ".join(index_vars[:tensor_rank])
+        index_str = ", ".join(index_vars[:tensor_rank]) if tensor_rank > 0 else ""
 
         if self.code_gen_fn:
             return self.code_gen_fn(input_vars, output_var, index_vars, tensor_rank)
-        elif self.code_template:
+        elif template:
             # Smart variable access - DMA loads have .data, local buffers don't
             def format_input_access(var_name: str) -> str:
                 if var_name.startswith("l1_load__") or var_name.startswith("l2_load__"):
@@ -126,7 +207,7 @@ class OperatorInfo:
             input1_access = format_input_access(input_vars[1]) if len(input_vars) > 1 else "input"
 
             # Use template with smart variable access
-            return self.code_template.format(
+            return template.format(
                 output=output_var,
                 input0_access=input0_access,
                 input1_access=input1_access,
@@ -192,7 +273,7 @@ class OperatorRegistry:
                 return (input_shapes[0][0], input_shapes[1][1])
             return (4, 4)
 
-        # Elementwise operations
+        # Elementwise operations with multi-rank support
         add_op = OperatorInfo(
             name="add",
             canonical_name="add",
@@ -204,6 +285,24 @@ class OperatorRegistry:
             output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
             code_template="{output}.at({index}) = {input0_access} + {input1_access};",
             fusable=True,
+            preferred_fusion_level=FusionLevel.LOCAL,
+            rank_variants={
+                TensorRank.VECTOR: RankSpecificVariant(
+                    tensor_rank=TensorRank.VECTOR,
+                    code_template="{output}.at({index}) = {input0_access} + {input1_access};",
+                    memory_level_preference=["l1", "l2", "global"]
+                ),
+                TensorRank.MATRIX: RankSpecificVariant(
+                    tensor_rank=TensorRank.MATRIX,
+                    code_template="{output}.at({index}) = {input0_access} + {input1_access};",
+                    memory_level_preference=["l1", "l2", "global"]
+                ),
+                TensorRank.TENSOR_3D: RankSpecificVariant(
+                    tensor_rank=TensorRank.TENSOR_3D,
+                    code_template="{output}.at({index}) = {input0_access} + {input1_access};",
+                    memory_level_preference=["l2", "global", "l1"]
+                )
+            }
         )
 
         mul_op = OperatorInfo(
@@ -217,6 +316,24 @@ class OperatorRegistry:
             output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
             code_template="{output}.at({index}) = {input0_access} * {input1_access};",
             fusable=True,
+            preferred_fusion_level=FusionLevel.LOCAL,
+            rank_variants={
+                TensorRank.VECTOR: RankSpecificVariant(
+                    tensor_rank=TensorRank.VECTOR,
+                    code_template="{output}.at({index}) = {input0_access} * {input1_access};",
+                    memory_level_preference=["l1", "l2", "global"]
+                ),
+                TensorRank.MATRIX: RankSpecificVariant(
+                    tensor_rank=TensorRank.MATRIX,
+                    code_template="{output}.at({index}) = {input0_access} * {input1_access};",
+                    memory_level_preference=["l1", "l2", "global"]
+                ),
+                TensorRank.TENSOR_3D: RankSpecificVariant(
+                    tensor_rank=TensorRank.TENSOR_3D,
+                    code_template="{output}.at({index}) = {input0_access} * {input1_access};",
+                    memory_level_preference=["l2", "global", "l1"]
+                )
+            }
         )
 
         sub_op = OperatorInfo(
