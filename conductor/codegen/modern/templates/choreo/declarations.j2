@@ -1,0 +1,4 @@
+{#- Choreo DSL Declarations Template -#}
+{%- for buffer in local_buffers %}
+  {{ buffer.dtype | dtype }} {{ buffer.shape | shape }} {{ buffer.name }};
+{%- endfor %}

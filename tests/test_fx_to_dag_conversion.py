@@ -10,9 +10,9 @@ import torch
 import torch.fx as fx
 from typing import List, Tuple
 
-from conductor.graph.graph_analyzer import GraphAnalyzer, ComputationDAG
-from conductor.graph.graph_nodes import ConductorNode
-from conductor.graph.buffers import Buffer
+from conductor.optimization.graph_analyzer import GraphAnalyzer, ComputationDAG
+from conductor.optimization.graph_nodes import ConductorNode
+from conductor.optimization.buffers import Buffer
 
 
 class TestFXToDAGConversion:

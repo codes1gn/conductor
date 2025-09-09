@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional, Any
 import torch.fx as fx
-from .operator_registry import get_op_desc, operator_registry, get_operator_template
+from .operator_registry import get_op_desc, get_operator_registry, get_operator_template
 from ..utils.logging import get_logger
 
 # Delayed import to avoid circular dependency; used only for typing and construction
@@ -25,7 +25,7 @@ class OperationFactory:
     """
 
     def __init__(self):
-        self.operation_registry = operator_registry
+        self.operation_registry = get_operator_registry()
         logger.info("Initialized operation factory")
 
     def extract_operation_name(self, fx_node: fx.Node) -> str:
@@ -176,7 +176,11 @@ class OperationFactory:
 
 
 # Global factory instance
-operation_factory = OperationFactory()
+def get_operation_factory() -> OperationFactory:
+    """Get the operation factory from the global context."""
+    from ..context import ensure_context_initialized
+    context = ensure_context_initialized()
+    return context.get_operation_factory()
 
 
 # Convenience functions

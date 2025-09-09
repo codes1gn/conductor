@@ -1,8 +1,8 @@
 """
-Graph module for FX graph analysis and DAG representation.
+Optimization module for FX graph analysis and DAG optimization.
 
 This module handles the conversion of PyTorch FX graphs to internal DAG representation,
-including buffer management and graph node definitions.
+including buffer management, fusion optimization, and graph node definitions.
 """
 
 from .graph_analyzer import GraphAnalyzer, ComputationDAG

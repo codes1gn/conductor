@@ -12,13 +12,14 @@ import hashlib
 from typing import Optional, Dict, Any, List
 import torch
 from .loader import CompiledArtifact, ExecutableKernel
-from ..graph.graph_analyzer import GraphAnalyzer
-from ..graph.fusion import FusionEngine
+from ..optimization.graph_analyzer import GraphAnalyzer
+from ..optimization.fusion import FusionEngine
 from ..codegen.dslgen import ChoreoDslGen
 from ..utils.exceptions import CompilationError, UnsupportedOperationError
 from ..utils.logging import get_logger
 from ..utils.artifacts import get_debug_manager
-from ..utils.trace import get_debug_tracer, trace_internal_dag, trace_choreo_dsl
+from ..utils.tracer import get_tracer, trace_internal_dag, trace_choreo_dsl
+from ..utils.config import get_config
 
 logger = get_logger(__name__)
 
@@ -41,11 +42,22 @@ class ChoreoJITCompiler:
         """
         from ..utils.cache import CompilationCache
 
-        self._cache = CompilationCache(cache_dir, max_cache_size_mb)
+        # Load configuration for cache settings
+        self._config = get_config()
+
+        # Initialize cache with config-driven settings
+        cache_config = self._config.cache
+        self._cache = CompilationCache(
+            cache_dir or cache_config.cache_dir,
+            max_cache_size_mb or cache_config.max_size_mb
+        )
         self._graph_analyzer = GraphAnalyzer()
         self._fusion_engine = FusionEngine()
         self._dsl_generator = ChoreoDslGen()
-        self.compilation_timeout = 300  # 5 minutes
+
+        # Get compilation timeout from config
+        compilation_config = self._config.compilation
+        self.compilation_timeout = compilation_config.timeout_seconds
 
     def compile_graph(
         self,
@@ -68,15 +80,17 @@ class ChoreoJITCompiler:
         logger.info(
             f"Starting Choreo JIT compilation for graph with {len(list(graph_module.graph.nodes))} nodes"
         )
-        debug_tracer = get_debug_tracer()
+        tracer = get_tracer()
 
         try:
             # Generate graph signature for caching
             graph_hash = self._generate_graph_hash(graph_module)
             logger.debug(f"Graph hash: {graph_hash}")
+            logger.info(f"Graph hash: {graph_hash}")
 
-            # Check cache first (skip if debug mode)
-            if not debug_tracer.is_enabled():
+            # Check cache first (controlled by config)
+            cache_config = self._config.cache
+            if cache_config.enabled:
                 cached_artifact = self._cache.get(graph_hash)
                 if cached_artifact is not None:
                     logger.info("Found cached compilation result")
@@ -86,37 +100,51 @@ class ChoreoJITCompiler:
                         logger.warning("Cached artifact is invalid, removing from cache")
                         self._cache.invalidate(graph_hash)
 
-            # Step 1: Convert FX Graph to internal DAG with shape information
+            # Step 1: Convert FX Graph to internal DAG with shape information (config-driven)
+            compilation_config = self._config.compilation
             logger.debug("Converting FX Graph to internal DAG")
-            dag = self._graph_analyzer.parse_fx_graph(graph_module, example_inputs)
+            logger.info("Converting FX Graph to internal DAG")
 
-            # Debug tracing: Print internal DAG representation
-            if debug_tracer.is_enabled():
+            # Parse graph with config-driven options
+            dag = self._graph_analyzer.parse_fx_graph(
+                graph_module,
+                example_inputs,
+                enable_shape_inference=compilation_config.enable_shape_inference
+            )
+
+            # Trace internal DAG representation (config-driven)
+            if tracer.should_trace_dag():
                 trace_internal_dag(dag)
 
-            # Validate graph correctness
-            if not dag.validate_graph_correctness():
-                raise CompilationError("Invalid graph structure detected", "", "")
+            # Validate graph correctness (config-driven)
+            if compilation_config.enable_graph_validation:
+                if not dag.validate_graph_correctness():
+                    raise CompilationError("Invalid graph structure detected", "", "")
 
-            # Step 2: Apply fusion optimizations
-            logger.debug("Applying fusion optimizations")
-            fusion_clusters = self._fusion_engine.identify_fusion_opportunities(dag)
-            logger.info(f"Fusion clusters: {fusion_clusters}")
-            logger.info(f"Identified {len(fusion_clusters)} fusion opportunities")
+            # Step 2: Apply fusion optimizations (config-driven)
+            fusion_clusters = []
+            if compilation_config.enable_fusion:
+                logger.debug("Applying fusion optimizations")
+                fusion_clusters = self._fusion_engine.identify_fusion_opportunities(dag)
+                logger.info(f"Fusion clusters: {fusion_clusters}")
+                logger.info(f"Identified {len(fusion_clusters)} fusion opportunities")
 
-            # Apply fusion optimizations to the DAG
-            for cluster in fusion_clusters:
-                self._fusion_engine.optimize_buffer_usage(cluster)
-                for node in cluster.nodes:
-                    node.fusion_group = cluster
+                # Apply fusion optimizations to the DAG
+                for cluster in fusion_clusters:
+                    if compilation_config.enable_buffer_optimization:
+                        self._fusion_engine.optimize_buffer_usage(cluster)
+                    for node in cluster.nodes:
+                        node.fusion_group = cluster
+            else:
+                logger.info("Fusion optimizations disabled by config")
 
             # Step 3: Generate Choreo DSL
             logger.debug("Generating Choreo DSL")
             function_name = f"kernel_{graph_hash[:8]}"
             dsl_content = self._dsl_generator.generate_dsl_file(dag, function_name)
 
-            # Debug tracing: Print generated Choreo DSL code
-            if debug_tracer.is_enabled():
+            # Trace generated Choreo DSL code (config-driven)
+            if tracer.should_trace_dsl():
                 # Extract kernel code if present
                 kernel_code = None
                 if "__cok__" in dsl_content:
@@ -178,8 +206,8 @@ class ChoreoJITCompiler:
                     },
                 )
 
-                # Cache the result (skip if debug mode)
-                if not debug_tracer.is_enabled():
+                # Cache the result (controlled by config)
+                if cache_config.enabled:
                     if not self.cache_compilation_result(graph_hash, artifact):
                         logger.warning("Failed to cache compilation result")
 
@@ -255,14 +283,26 @@ class ChoreoJITCompiler:
                 try:
                     with open(dsl_file_path, "r") as f:
                         dsl_content = f.read()
-                except:
-                    raise CompilationError
+                except Exception as read_error:
+                    logger.error(f"Failed to read DSL file for error context: {read_error}")
+                    dsl_content = ""
 
-                error_msg = f"Choreo compilation failed with return code {result.returncode}"
+                error_msg = f"Choreo compilation failed with return code {result.returncode} (dsl_length={len(dsl_content)})"
+
+                # Log detailed error information
+                logger.error(f"Choreo compiler command: {' '.join(compile_cmd)}")
+                logger.error(f"DSL file path: {dsl_file_path}")
+
                 if result.stderr:
                     error_msg += f"\nStderr: {result.stderr}"
+                    logger.error(f"Choreo compiler stderr:\n{result.stderr}")
                 if result.stdout:
                     error_msg += f"\nStdout: {result.stdout}"
+                    logger.error(f"Choreo compiler stdout:\n{result.stdout}")
+
+                # Log the actual DSL content that failed to compile
+                if dsl_content:
+                    logger.error(f"DSL content that failed to compile:\n{dsl_content}")
 
                 raise CompilationError(
                     error_msg, dsl_code=dsl_content, compiler_output=result.stderr or result.stdout

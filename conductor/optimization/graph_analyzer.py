@@ -1,8 +1,8 @@
 """
-FX Graph analysis and internal representation.
+FX Graph analysis and optimization.
 
 This module provides classes and functions for parsing PyTorch FX Graphs
-and converting them to Conductor's internal DAG representation.
+and converting them to Conductor's internal DAG representation with optimization.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import logging
 import torch
 from .buffers import Buffer, BufferManager, BufferScope
 from .graph_nodes import ConductorNode
+from ..utils.tracer import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -96,12 +97,15 @@ class GraphAnalyzer:
         self,
         graph_module: torch.fx.GraphModule,
         example_inputs: Optional[list[torch.Tensor]] = None,
+        enable_shape_inference: bool = True,
     ) -> ComputationDAG:
         """
         Convert FX Graph to internal DAG representation.
 
         Args:
             graph_module: PyTorch FX Graph to convert
+            example_inputs: Example inputs for shape inference
+            enable_shape_inference: Whether to enable shape inference
 
         Returns:
             ComputationDAG representing the input graph
@@ -109,30 +113,104 @@ class GraphAnalyzer:
         if graph_module is None:
             raise ValueError("graph_module cannot be None")
 
+        # Initialize DAG with comprehensive tracing
+        tracer = get_tracer()
         dag = ComputationDAG()
+
+        if tracer.should_trace_dag():
+            logger.info("=== DAG Construction Tracing ===")
+            logger.info(f"Starting DAG construction from FX graph with {len(list(graph_module.graph.nodes))} nodes")
 
         # Reset internal state
         self._node_to_buffer.clear()
         self._buffer_to_node.clear()
 
-        # First pass: create buffers for all FX nodes
+        # First pass: create buffers for all FX nodes with tracing
+        if tracer.should_trace_dag():
+            logger.info("Phase 1: Creating buffers for FX nodes")
+            self._dump_buffer_state_table(dag, "Buffer State Before Phase 1")
+
+        buffer_count = 0
         for node in graph_module.graph.nodes:
             self._create_buffer_for_node(node, dag)
+            buffer_count += 1
 
-        # Second pass: create ConductorNodes and establish connections
+            if tracer.should_trace_dag():
+                logger.info(f"  Buffer {buffer_count}: {node.name} ({node.op}) -> {len(dag.buffers)} total buffers")
+
+        if tracer.should_trace_dag():
+            self._dump_buffer_state_table(dag, "Buffer State After Phase 1")
+
+        # Second pass: create ConductorNodes and establish connections with tracing
+        if tracer.should_trace_dag():
+            logger.info("Phase 2: Creating ConductorNodes and establishing connections")
+
+        node_count = 0
         for node in graph_module.graph.nodes:
             conductor_node = self._convert_fx_node(node, dag)
             if conductor_node:
                 dag.add_node(conductor_node)
+                node_count += 1
+
+                if tracer.should_trace_dag():
+                    # Get a meaningful name for the node
+                    node_name = getattr(conductor_node, 'name', f"node_{node_count}")
+                    logger.info(f"  Node {node_count}: {node_name} ({conductor_node.op_name})")
+                    logger.info(f"    Inputs: {[getattr(buf, 'name', str(buf)) for buf in conductor_node.inputs]}")
+                    logger.info(f"    Outputs: {[getattr(buf, 'name', str(buf)) for buf in conductor_node.outputs]}")
+                    logger.info(f"    Total DAG nodes: {len(dag.nodes)}")
 
         # Identify inputs and outputs with shape information from example inputs
+        if tracer.should_trace_dag():
+            logger.info("Phase 3: Identifying graph inputs and outputs")
+
         self._identify_graph_inputs_outputs(graph_module.graph, dag, example_inputs)
 
+        if tracer.should_trace_dag():
+            logger.info(f"  Identified {len(dag.inputs)} input buffers: {[buf.name for buf in dag.inputs]}")
+            logger.info(f"  Identified {len(dag.outputs)} output buffers: {[buf.name for buf in dag.outputs]}")
+            self._dump_buffer_state_table(dag, "Buffer State After Phase 3")
+
         # CRITICAL FIX: Third pass - propagate shapes after input shapes are set
-        self._propagate_shapes_for_elementwise_ops(dag)
+        # FIXME: This is a temporary solution. Ideally, we should be able to get shape info from torch.dynamo/fx graph
+        # I am not familiar with torch.fx, will it be possible to get shape info from fx graph in JIT mode?
+        # Propagate shapes for elementwise operations (config-driven)
+        if enable_shape_inference:
+            if tracer.should_trace_dag():
+                logger.info("Phase 4: Propagating shapes for elementwise operations")
+
+            self._propagate_shapes_for_elementwise_ops(dag)
+
+            if tracer.should_trace_dag():
+                logger.info("  Shape propagation completed")
+                self._dump_buffer_state_table(dag, "Buffer State After Phase 4")
 
         # Analyze data dependencies
+        if tracer.should_trace_dag():
+            logger.info("Phase 5: Analyzing data dependencies")
+
         self.identify_data_dependencies(dag)
+
+        # Perform buffer lifetime analysis
+        if tracer.should_trace_dag():
+            logger.info("Phase 6: Buffer lifetime analysis")
+
+        lifetime_map = self.buffer_manager.analyze_buffer_lifetimes(dag)
+
+        if tracer.should_trace_dag():
+            logger.info("  Lifetime analysis completed")
+
+        if tracer.should_trace_dag():
+            logger.info("=== DAG Construction Complete ===")
+            logger.info(f"Final DAG summary:")
+            logger.info(f"  Total nodes: {len(dag.nodes)}")
+            logger.info(f"  Total buffers: {len(dag.buffers)}")
+            logger.info(f"  Input buffers: {len(dag.inputs)}")
+            logger.info(f"  Output buffers: {len(dag.outputs)}")
+
+            # Calculate total memory usage
+            total_memory = sum(buf.memory_size for buf in dag.buffers)
+            logger.info(f"  Total memory usage: {total_memory} bytes ({total_memory / 1024:.1f} KB)")
 
         return dag
 
@@ -141,6 +219,9 @@ class GraphAnalyzer:
         Propagate shapes from input buffers to output buffers for operations.
         This runs after input shapes are set from example_inputs.
         """
+        tracer = get_tracer()
+        shape_updates = 0
+
         for node in dag.nodes:
             if node.op_name in [
                 "add",
@@ -158,8 +239,18 @@ class GraphAnalyzer:
                     output_buffer = node.outputs[0]
 
                     if input_buffer.shape and not output_buffer.shape:
+                        old_shape = output_buffer.shape
+                        old_dtype = output_buffer.dtype
+
                         output_buffer.shape = input_buffer.shape
                         output_buffer.dtype = input_buffer.dtype
+                        shape_updates += 1
+
+                        if tracer.should_trace_dag():
+                            logger.info(f"    Shape update {shape_updates}: {output_buffer.name}")
+                            logger.info(f"      Shape: {old_shape} -> {output_buffer.shape}")
+                            logger.info(f"      Dtype: {old_dtype} -> {output_buffer.dtype}")
+
                         logger.debug(
                             f"Propagated shape for {output_buffer.name}: {output_buffer.shape}"
                         )
@@ -174,12 +265,32 @@ class GraphAnalyzer:
                     if input1.shape and input2.shape and not output_buffer.shape:
                         # For 2D matmul: (M, K) @ (K, N) -> (M, N)
                         if len(input1.shape) == 2 and len(input2.shape) == 2:
+                            old_shape = output_buffer.shape
+                            old_dtype = output_buffer.dtype
+
                             output_shape = (input1.shape[0], input2.shape[1])
                             output_buffer.shape = output_shape
                             output_buffer.dtype = input1.dtype
+                            shape_updates += 1
+
+                            if tracer.should_trace_dag():
+                                logger.info(f"    Shape update {shape_updates}: {output_buffer.name} (matmul)")
+                                logger.info(f"      Input1: {input1.shape}, Input2: {input2.shape}")
+                                logger.info(f"      Shape: {old_shape} -> {output_buffer.shape}")
+                                logger.info(f"      Dtype: {old_dtype} -> {output_buffer.dtype}")
+
                             logger.debug(
                                 f"Propagated matmul shape for {output_buffer.name}: {output_buffer.shape}"
                             )
+
+        # Summary of shape propagation and update memory sizes
+        if tracer.should_trace_dag():
+            logger.info(f"  Shape propagation summary: {shape_updates} buffers updated")
+
+        # Update memory sizes for all buffers after shape propagation
+        for buffer in dag.buffers:
+            if buffer.shape:
+                buffer.memory_size = buffer._calculate_memory_size()
 
     def _create_buffer_for_node(self, fx_node: torch.fx.Node, dag: ComputationDAG) -> None:
         """
@@ -189,6 +300,9 @@ class GraphAnalyzer:
             fx_node: FX Graph node
             dag: Computation DAG being built
         """
+        # Get tracer for potential buffer dumps
+        tracer = get_tracer()
+
         if fx_node.op in ("placeholder", "get_attr", "call_function", "call_method", "call_module"):
             # Determine buffer properties
             buffer_name = self._generate_buffer_name(fx_node)
@@ -282,9 +396,10 @@ class GraphAnalyzer:
             Operation name string
         """
         # FIXME: Import here to avoid circular imports
-        from ..codegen.operation_factory import operation_factory
+        from ..codegen.operation_factory import get_operation_factory
 
         # Use centralized operation factory for consistent operation name extraction
+        operation_factory = get_operation_factory()
         return operation_factory.extract_operation_name(fx_node)
 
     def _extract_node_metadata(self, fx_node: torch.fx.Node) -> dict[str, Any]:
@@ -404,6 +519,9 @@ class GraphAnalyzer:
                     )
                     input_index += 1
 
+                # Mark as input buffer for lifetime analysis
+                buffer.is_input = True
+                buffer.memory_size = buffer._calculate_memory_size()
                 dag.inputs.append(buffer)
 
         # Find output nodes
@@ -419,10 +537,14 @@ class GraphAnalyzer:
                                 and output_node in self._node_to_buffer
                             ):
                                 buffer = self._node_to_buffer[output_node]
+                                buffer.is_output = True  # Mark as output for lifetime analysis
+                                buffer.memory_size = buffer._calculate_memory_size()
                                 dag.outputs.append(buffer)
                     elif isinstance(arg, torch.fx.Node) and arg in self._node_to_buffer:
                         # Single output
                         buffer = self._node_to_buffer[arg]
+                        buffer.is_output = True  # Mark as output for lifetime analysis
+                        buffer.memory_size = buffer._calculate_memory_size()
                         dag.outputs.append(buffer)
 
     def identify_data_dependencies(self, dag: ComputationDAG) -> None:
@@ -580,3 +702,58 @@ class GraphAnalyzer:
                     return False
 
         return True
+
+    def _dump_buffer_state_table(self, dag: ComputationDAG, title: str, context: str = "") -> None:
+        """
+        Dump current buffer state in tabular format for debugging.
+
+        Args:
+            dag: Current computation DAG
+            title: Title for the dump
+            context: Additional context information
+        """
+        tracer = get_tracer()
+        if not tracer.should_trace_dag():
+            return
+
+        logger.info(f"=== {title} ===")
+        if context:
+            logger.info(f"Context: {context}")
+
+        if not dag.buffers:
+            logger.info("No buffers in DAG")
+            return
+
+        # Calculate column widths
+        name_width = max(len("Buffer Name"), max(len(buf.name) for buf in dag.buffers))
+        shape_width = max(len("Shape"), max(len(str(buf.shape)) if buf.shape else len("None") for buf in dag.buffers))
+        dtype_width = max(len("Dtype"), max(len(str(buf.dtype)) if buf.dtype else len("None") for buf in dag.buffers))
+        scope_width = max(len("Scope"), max(len(str(buf.scope)) if hasattr(buf, 'scope') else len("Unknown") for buf in dag.buffers))
+
+        # Ensure minimum widths
+        name_width = max(name_width, 12)
+        shape_width = max(shape_width, 15)
+        dtype_width = max(dtype_width, 15)
+        scope_width = max(scope_width, 10)
+
+        # Create table header
+        header = f"| {'Buffer Name':<{name_width}} | {'Shape':<{shape_width}} | {'Dtype':<{dtype_width}} | {'Scope':<{scope_width}} |"
+        separator = f"|{'-' * (name_width + 2)}|{'-' * (shape_width + 2)}|{'-' * (dtype_width + 2)}|{'-' * (scope_width + 2)}|"
+
+        logger.info(separator)
+        logger.info(header)
+        logger.info(separator)
+
+        # Create table rows
+        for i, buffer in enumerate(dag.buffers):
+            name = buffer.name
+            shape = str(buffer.shape) if buffer.shape else "None"
+            dtype = str(buffer.dtype) if buffer.dtype else "None"
+            scope = str(buffer.scope) if hasattr(buffer, 'scope') else "Unknown"
+
+            row = f"| {name:<{name_width}} | {shape:<{shape_width}} | {dtype:<{dtype_width}} | {scope:<{scope_width}} |"
+            logger.info(row)
+
+        logger.info(separator)
+        logger.info(f"Total buffers: {len(dag.buffers)}")
+        logger.info("")

@@ -32,6 +32,35 @@ from .trace import (
     trace_fx_graph,
 )
 
+from .tracer import (
+    ConductorTracer,
+    get_tracer,
+    trace_internal_dag,
+    trace_choreo_dsl,
+    trace_compilation_result,
+    trace_execution_result,
+)
+
+from .type_mapping import (
+    TypeMapper,
+    ChoreoDataType,
+    TypeInfo,
+    get_type_mapper,
+    torch_to_choreo_string,
+    choreo_to_torch_dtype,
+    is_supported_dtype,
+    get_dtype_size_bytes,
+)
+
+from .symbolic_shapes import (
+    SymbolicDimension,
+    SymbolicDimType,
+    SymbolicShapeResolver,
+    get_symbolic_shape_resolver,
+    resolve_symbolic_shape,
+    infer_shape_context,
+)
+
 from .cache import CompilationCache
 from .artifacts import get_debug_manager
 from .logging import get_logger
@@ -57,12 +86,38 @@ __all__ = [
     "set_config",
     "load_config",
 
-    # Debug and tracing
+    # Debug and tracing (legacy)
     "DebugTracer",
     "get_debug_tracer",
     "enable_debug_tracing",
     "disable_debug_tracing",
     "trace_fx_graph",
+
+    # Modern tracing
+    "ConductorTracer",
+    "get_tracer",
+    "trace_internal_dag",
+    "trace_choreo_dsl",
+    "trace_compilation_result",
+    "trace_execution_result",
+
+    # Type mapping
+    "TypeMapper",
+    "ChoreoDataType",
+    "TypeInfo",
+    "get_type_mapper",
+    "torch_to_choreo_string",
+    "choreo_to_torch_dtype",
+    "is_supported_dtype",
+    "get_dtype_size_bytes",
+
+    # Symbolic shapes
+    "SymbolicDimension",
+    "SymbolicDimType",
+    "SymbolicShapeResolver",
+    "get_symbolic_shape_resolver",
+    "resolve_symbolic_shape",
+    "infer_shape_context",
 
     # Caching and artifacts
     "CompilationCache",

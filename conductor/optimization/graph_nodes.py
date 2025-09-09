@@ -2,7 +2,7 @@
 Graph Node Definitions for Conductor.
 
 This module contains the core node classes used in the computation graph
-to avoid circular import issues.
+for optimization and analysis.
 """
 
 from __future__ import annotations

@@ -1,0 +1,15 @@
+{#- Choreo DSL Header Template -#}
+{%- if add_comments %}
+// Generated Choreo DSL
+// Auto-generated from PyTorch FX Graph via Conductor
+// Function: {{ function_name }}
+// Target: {{ generation_config.target_dialect }}
+
+{%- endif %}
+{%- if include_choreo %}
+#include "choreo.h"
+{%- endif %}
+
+{%- for include in custom_includes %}
+#include "{{ include }}"
+{%- endfor %}

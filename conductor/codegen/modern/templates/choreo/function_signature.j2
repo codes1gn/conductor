@@ -1,0 +1,7 @@
+{#- Choreo DSL Function Signature Template -#}
+{{ function_prefix }} {{ function_name }}(
+{%- for param in all_params %}
+  {{ param.dtype | dtype }} {{ param.shape | shape }} {{ param.name }}
+  {%- if not loop.last %},{% endif %}
+{%- endfor %}
+) {

@@ -16,10 +16,10 @@ from .operator_registry import (
     requires_device_kernel,
     get_device_kernel_operations,
 )
-from .dslgen_base import DslGenerator, operation_handler_registry
-from .operation_factory import operation_factory
-from .device_kernels import device_kernel_registry
-from .registry_based_templates import registry_template_engine, TemplateContext
+# Removed dslgen_base - using direct implementation
+from .operation_factory import get_operation_factory
+from .device_kernels import get_device_kernel_registry
+from .registry_based_templates import get_registry_template_engine, TemplateContext
 from .dsl_constants import (
     ContextKeys,
     MemoryLevel,
@@ -28,22 +28,25 @@ from .dsl_constants import (
     default_identifier_generator,
     reset_dsl_generation,
 )
-from .dma_generator import dma_generator
-from .dsl_generator import modern_choreo_compiler
-from ..graph.buffer_naming import (
+from .dma_generator import get_dma_generator
+# Removed dsl_generator - using unified implementation
+from ..optimization.buffer_naming import (
     buffer_naming_manager,
     get_output_buffer_name,
     get_load_buffer_name,
     get_intermediate_buffer_name,
     reset_buffer_naming,
 )
-from ..graph.dag_naming import dag_naming_annotator, DAGNamingAnnotation
+from ..optimization.dag_naming import dag_naming_annotator, DAGNamingAnnotation
 from ..utils.logging import get_logger
+from ..utils.constants import DEFAULT_DSL_INDENT_SIZE, MemoryLevel
+from ..utils.config import get_config
+from ..utils.type_mapping import get_type_mapper, torch_to_choreo_string
 
 logger = get_logger(__name__)
 
 
-class ChoreoDslGen(DslGenerator):
+class ChoreoDslGen:
     """
     Generates Choreo DSL code from computation graphs using Template Method Pattern.
 
@@ -59,10 +62,13 @@ class ChoreoDslGen(DslGenerator):
         Args:
             config: Optional configuration for DSL generation
         """
-        super().__init__()
+        # Initialize unified DSL generator
         self.config = config or {}
-        # TODO: indent size should load from config
-        self.indent_size = 2  # Override base class default
+        self.indent_level = 0  # Track indentation level
+
+        # Load indent size from config
+        conductor_config = get_config()
+        self.indent_size = getattr(conductor_config, 'dsl_indent_size', DEFAULT_DSL_INDENT_SIZE)
 
         # Initialize all naming systems for this generation session
         reset_buffer_naming()
@@ -74,21 +80,23 @@ class ChoreoDslGen(DslGenerator):
         # Registry-based templates are now the only system
         # Legacy handlers are deprecated and will be removed
 
-        # TODO: extract to utils
-        # Choreo type mapping
-        self.dtype_map = {
-            "torch.float32": "f32",
-            "torch.float16": "f16",
-            "torch.bfloat16": "bf16",
-            "torch.int32": "s32",
-            "torch.int64": "s64",
-            "torch.int8": "s8",
-            "torch.uint8": "u8",
-            "torch.bool": "bool",
-        }
+        # Use centralized type mapping utilities
+        self.type_mapper = get_type_mapper()
 
         # Use registry-based templates as the single source of truth
         logger.info("ChoreoDslGen initialized with registry-based templates")
+
+    def _indent(self, text: str) -> str:
+        """Apply current indentation to text."""
+        return "  " * self.indent_level + text
+
+    def _increase_indent(self):
+        """Increase indentation level."""
+        self.indent_level += 1
+
+    def _decrease_indent(self):
+        """Decrease indentation level."""
+        self.indent_level = max(0, self.indent_level - 1)
 
     # Template Method Pattern implementations
     def generate_header(self) -> list[str]:
@@ -133,7 +141,7 @@ class ChoreoDslGen(DslGenerator):
     def generate_operation(self, node: ConductorNode, context: dict[str, Any]) -> list[str]:
         """Generate code for a single operation using centralized factory."""
         # Use centralized operation factory for consistent code generation
-        return operation_factory.generate_dsl_code(node, **context)
+        return get_operation_factory().generate_dsl_code(node, **context)
 
     def generate_buffer_declaration(self, buffer: "Buffer") -> str:
         """Generate buffer declaration code."""
@@ -157,22 +165,16 @@ class ChoreoDslGen(DslGenerator):
             Complete Choreo DSL file content as string
         """
         # Import at runtime to avoid circular imports
-        from ..graph.graph_analyzer import ComputationDAG
-        from ..graph.graph_nodes import ConductorNode
-        from ..graph.buffers import Buffer
+        from ..optimization.graph_analyzer import ComputationDAG
+        from ..optimization.graph_nodes import ConductorNode
+        from ..optimization.buffers import Buffer
 
         logger.info(
             f"Generating Choreo DSL file for function: {function_name} using modern DSL generator"
         )
 
-        # Try modern DSL generator first
-        try:
-            modern_dsl = modern_choreo_compiler.generate_dsl_from_dag(dag, function_name)
-            logger.info("Successfully generated DSL using modern generator")
-            return modern_dsl
-        except Exception as e:
-            logger.warning(f"Modern DSL generation failed: {e}, falling back to legacy generator")
-            return self._generate_dsl_with_registry_templates(dag, function_name)
+        # Use unified DSL generation approach
+        return self._generate_dsl_with_registry_templates(dag, function_name)
 
     def _generate_dsl_with_registry_templates(self, dag: ComputationDAG, function_name: str) -> str:
         """Generate complete DSL using the new systematic naming and zero-hardcoded design."""
@@ -230,8 +232,9 @@ class ChoreoDslGen(DslGenerator):
         """Generate __cok__ section for device kernels using authentic implementations."""
         # Check if we need device kernels
         kernel_ops = []
+        device_registry = get_device_kernel_registry()
         for node in dag.nodes:
-            if device_kernel_registry.has_kernel(node.op_name):
+            if device_registry.has_kernel(node.op_name):
                 kernel_ops.append(node)
 
         if not kernel_ops:
@@ -242,7 +245,7 @@ class ChoreoDslGen(DslGenerator):
 
         # Generate authentic device kernel implementations
         for node in kernel_ops:
-            kernel = device_kernel_registry.get_kernel(node.op_name)
+            kernel = device_registry.get_kernel(node.op_name)
             if kernel:
                 lines.append("")
                 lines.append(f"// Device kernel for {node.op_name}")
@@ -301,7 +304,8 @@ class ChoreoDslGen(DslGenerator):
         Returns:
             tuple: (input_requirements, output_requirements)
         """
-        from .operator_registry import operator_registry
+        from .operator_registry import get_operator_registry
+        operator_registry = get_operator_registry()
 
         # Get topological order of nodes
         topo_order = self._get_topological_order(dag)
@@ -313,33 +317,38 @@ class ChoreoDslGen(DslGenerator):
                 [{"name": "output", "dtype": torch.float32, "shape": (4, 4)}],
             )
 
-        # Get input requirements from first node's operator template
-        first_node = topo_order[0]
-        first_op_info = operator_registry.get_operation(first_node.op_name)
-
+        # Get input requirements from ALL DAG inputs, not just first node
         input_requirements = []
-        if first_op_info and first_op_info.input_buffers:
-            for i, buf_spec in enumerate(first_op_info.input_buffers):
-                # Infer shape from actual DAG inputs
-                if dag.inputs and i < len(dag.inputs) and hasattr(dag.inputs[i], "shape"):
-                    actual_shape = dag.inputs[i].shape
-                else:
-                    actual_shape = (4, 4)  # Fallback
 
+        # Use actual DAG inputs to determine all required function parameters
+        if dag.inputs:
+            for i, dag_input in enumerate(dag.inputs):
+                # Use DAG input properties directly
                 input_requirements.append(
                     {
-                        "name": buf_spec.name,
-                        "dtype": buf_spec.dtype or torch.float32,
-                        "shape": actual_shape,
+                        "name": dag_input.name if hasattr(dag_input, 'name') and dag_input.name else f"input_{i}",
+                        "dtype": dag_input.dtype if hasattr(dag_input, 'dtype') and dag_input.dtype else torch.float32,
+                        "shape": dag_input.shape if hasattr(dag_input, 'shape') and dag_input.shape else (4, 4),
                     }
                 )
         else:
-            # Fallback - try to get shape from DAG inputs
-            if dag.inputs and hasattr(dag.inputs[0], "shape"):
-                actual_shape = dag.inputs[0].shape
-            else:
-                actual_shape = (4, 4)
-            input_requirements = [{"name": "input", "dtype": torch.float32, "shape": actual_shape}]
+            # Fallback for empty DAG inputs - analyze all nodes to find unique inputs
+            all_input_names = set()
+            for node in topo_order:
+                op_info = operator_registry.get_operation(node.op_name)
+                if op_info and op_info.input_buffers:
+                    for buf_spec in op_info.input_buffers:
+                        all_input_names.add(buf_spec.name)
+
+            # Create input requirements for all unique input names
+            for i, input_name in enumerate(sorted(all_input_names)):
+                input_requirements.append(
+                    {
+                        "name": input_name,
+                        "dtype": torch.float32,
+                        "shape": (4, 4),  # Fallback shape
+                    }
+                )
 
         # Get output requirements from last node's operator template
         last_node = topo_order[-1]
@@ -381,7 +390,7 @@ class ChoreoDslGen(DslGenerator):
 
     def _get_topological_order(self, dag: ComputationDAG) -> list:
         """Get topological order of DAG nodes using proper topological sorting."""
-        from ..graph.dag_naming import DAGTopologicalSorter
+        from ..optimization.dag_naming import DAGTopologicalSorter
 
         sorter = DAGTopologicalSorter()
         try:
@@ -426,7 +435,8 @@ class ChoreoDslGen(DslGenerator):
 
         # Combine into parallel structure using DMA generator
         body_lines = load_lines + [""] + computation_lines + [""] + store_lines
-        parallel_structure = dma_generator.generate_parallel_loop(
+        dma_gen = get_dma_generator()
+        parallel_structure = dma_gen.generate_parallel_loop(
             parallel_var, parallel_factor, index_var, chunk_size, body_lines
         )
 
@@ -449,19 +459,27 @@ class ChoreoDslGen(DslGenerator):
         # Generate load operations for each input
         source_vars = [req["name"] for req in input_requirements]
 
-        # Get target variables from first node's annotation
-        if annotation.execution_order:
-            first_node_id = annotation.execution_order[0]
-            first_naming = annotation.node_naming[first_node_id]
-            target_vars = first_naming.load_vars
-        else:
+        # Generate target variables for ALL source variables, not just first node's annotation
+        # This ensures we load all inputs needed by the entire DAG
+        target_vars = []
+        for i, src in enumerate(source_vars):
+            if i == 0:
+                target_vars.append("l1_load__lhs")  # First input
+            elif i == 1:
+                target_vars.append("l1_load__rhs")  # Second input
+            else:
+                target_vars.append(f"l1_load__input_{i}")  # Additional inputs
+
+        # Fallback to systematic generation if needed
+        if not target_vars:
             target_vars = [
                 default_identifier_generator.generate_load_var(src, MemoryLevel.L1)
                 for src in source_vars
             ]
 
         # Generate DMA load sequence
-        load_sequence = dma_generator.generate_load_sequence(
+        dma_gen = get_dma_generator()
+        load_sequence = dma_gen.generate_load_sequence(
             source_vars, target_vars, parallel_var, index_var
         )
         lines.extend(load_sequence)
@@ -495,7 +513,8 @@ class ChoreoDslGen(DslGenerator):
         target_vars = [req["name"] for req in output_requirements]
 
         # Generate DMA store sequence
-        store_sequence = dma_generator.generate_store_sequence(
+        dma_gen = get_dma_generator()
+        store_sequence = dma_gen.generate_store_sequence(
             source_vars, target_vars, parallel_var, index_var
         )
         lines.extend(store_sequence)
@@ -507,6 +526,17 @@ class ChoreoDslGen(DslGenerator):
     ) -> list[str]:
         """Generate computation body using annotation."""
         lines = []
+
+        # Create mapping from DAG inputs to DMA load variables
+        input_requirements, _ = self._analyze_dag_buffer_requirements(dag)
+        dma_load_mapping = {}
+        for i, req in enumerate(input_requirements):
+            if i == 0:
+                dma_load_mapping[req["name"]] = "l1_load__lhs"
+            elif i == 1:
+                dma_load_mapping[req["name"]] = "l1_load__rhs"
+            else:
+                dma_load_mapping[req["name"]] = f"l1_load__input_{i}"
 
         # Declare local output buffers for each node
         for node_id in annotation.execution_order:
@@ -542,7 +572,8 @@ class ChoreoDslGen(DslGenerator):
                     chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
                     buffer_shape = f"[{chunk_size}, {chunk_size}]"
 
-                buffer_decl = dma_generator.generate_buffer_declaration(
+                dma_gen = get_dma_generator()
+                buffer_decl = dma_gen.generate_buffer_declaration(
                     output_var, "f32", naming.memory_level, buffer_shape
                 )
                 lines.append(buffer_decl)
@@ -564,10 +595,33 @@ class ChoreoDslGen(DslGenerator):
                 if dag.inputs and dag.inputs[0].shape:
                     tensor_rank = len(dag.inputs[0].shape)
 
+                # Map node inputs to correct DMA load variables or intermediate results
+                actual_input_vars = []
+                for input_buf in node.inputs:
+                    if input_buf.name in dma_load_mapping:
+                        # This is a DAG input - use DMA load variable
+                        actual_input_vars.append(dma_load_mapping[input_buf.name])
+                    else:
+                        # This is an intermediate result - find the output variable from previous node
+                        producer_node = input_buf.producer
+                        if producer_node:
+                            producer_id = self._get_node_id(producer_node)
+                            if producer_id in annotation.node_naming:
+                                producer_naming = annotation.node_naming[producer_id]
+                                if producer_naming.output_vars:
+                                    actual_input_vars.append(producer_naming.output_vars[0])
+                                else:
+                                    actual_input_vars.append(f"temp_{producer_id}")
+                            else:
+                                actual_input_vars.append(f"temp_{producer_id}")
+                        else:
+                            # Fallback
+                            actual_input_vars.append(f"unknown_input_{len(actual_input_vars)}")
+
                 # Generate operation code using operator template with proper tensor rank
                 computation = self._generate_operation_from_template(
                     node,
-                    naming.input_vars,
+                    actual_input_vars,
                     naming.index_vars[0],
                     naming.output_vars[0],
                     tensor_rank,
@@ -585,33 +639,40 @@ class ChoreoDslGen(DslGenerator):
                         # Calculate chunk dimensions to match buffer shape
                         chunk_width = width // chunk_size if chunk_size > 0 else width
                         lines.append(
-                            f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{height}]"
+                            f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{height}] {{"
                         )
                         lines.append(
-                            f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{chunk_width}]"
+                            f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{chunk_width}] {{"
                         )
                         lines.append(f"    {computation}")
+                        lines.append("  }")  # Close inner foreach
+                        lines.append("}")    # Close outer foreach
                     else:
                         # Fallback
-                        lines.append(f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [4]")
-                        lines.append(f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [4]")
+                        lines.append(f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [4] {{")
+                        lines.append(f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [4] {{")
                         lines.append(f"    {computation}")
+                        lines.append("  }")  # Close inner foreach
+                        lines.append("}")    # Close outer foreach
                 elif tensor_rank == 1:
                     chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
                     lines.append(
-                        f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{chunk_size}]"
+                        f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{chunk_size}] {{"
                     )
                     lines.append(f"  {computation}")
+                    lines.append("}")  # Close foreach
                 else:
                     # For higher dimensions, use simplified 2D approach
                     chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
                     lines.append(
-                        f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{chunk_size}]"
+                        f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{chunk_size}] {{"
                     )
                     lines.append(
-                        f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{chunk_size}]"
+                        f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{chunk_size}] {{"
                     )
                     lines.append(f"    {computation}")
+                    lines.append("  }")  # Close inner foreach
+                    lines.append("}")    # Close outer foreach
 
         return lines
 
@@ -683,7 +744,7 @@ class ChoreoDslGen(DslGenerator):
             input_vars.append(load_var)
             lines.append(
                 self._indent(
-                    f"{load_var} = dma.copy.async {param_name}.chunkat(p, index) => local;"
+                    f"local {load_var} = dma.copy.async {param_name}.chunkat(p, index) => local;"
                 )
             )
 
@@ -728,7 +789,8 @@ class ChoreoDslGen(DslGenerator):
         # Check if we can use device kernels for this computation
         if len(dag.nodes) == 1:
             node = dag.nodes[0]
-            kernel = device_kernel_registry.get_kernel(node.op_name)
+            device_registry = get_device_kernel_registry()
+            kernel = device_registry.get_kernel(node.op_name)
 
             if kernel:
                 # Use device kernel call
@@ -778,7 +840,8 @@ class ChoreoDslGen(DslGenerator):
         tensor_rank: int = 2,
     ) -> str:
         """Generate operation code using operator template."""
-        from .operator_registry import operator_registry
+        from .operator_registry import get_operator_registry
+        operator_registry = get_operator_registry()
 
         # Get operator template
         op_info = operator_registry.get_operation(node.op_name)
@@ -789,9 +852,15 @@ class ChoreoDslGen(DslGenerator):
                 if tensor_rank == 1:
                     index_var_list = [index_vars]
                 elif tensor_rank == 2:
-                    # Use standard i, j naming for 2D
-                    base_name = index_vars.replace("idx_", "")
-                    index_var_list = [f"idx_{base_name}", f"idx_j"]
+                    # Use consistent naming that matches the foreach loop variables
+                    base_name = index_vars.replace("idx__", "").replace("idx_", "")
+                    if "_" in base_name:
+                        # For variables like "i_1", generate "idx__i_1", "idx__j_1"
+                        suffix = base_name.split("_")[-1]
+                        index_var_list = [f"idx__i_{suffix}", f"idx__j_{suffix}"]
+                    else:
+                        # For simple variables like "i", generate "idx__i", "idx__j"
+                        index_var_list = [f"idx__{base_name}", f"idx__j"]
                 else:
                     # For higher dimensions
                     base_name = index_vars.replace("idx_", "")
@@ -875,7 +944,8 @@ class ChoreoDslGen(DslGenerator):
             "output_buffer_name": output_buffer_name,
         }
 
-        handler = operation_handler_registry.get_handler_for_node(node)
+        # Use operation factory for unified operation handling
+        handler = None  # Simplified - use operation factory instead
         if handler:
             code_lines = handler.generate_code(node, context)
             return (
@@ -885,19 +955,32 @@ class ChoreoDslGen(DslGenerator):
             )
 
         # Fallback to dispatch table for legacy operations
-        return self._dispatch_operation_generation(node, input_vars, index_vars, output_buffer_name)
+        return self._dispatch_operation_generation(node, input_vars, index_vars, MemoryLevel.L1, output_buffer_name)
 
     def _dispatch_operation_generation(
         self,
         node: ConductorNode,
         input_vars: list[str],
         index_vars: str,
+        memory_level: MemoryLevel = MemoryLevel.L1,
         output_buffer_name: str = None,
     ) -> str:
-        """Dispatch operation generation using a dispatch table pattern."""
-        # Use provided output buffer name or generate one
+        """
+        Dispatch operation generation using a dispatch table pattern.
+
+        Args:
+            node: Computation node
+            input_vars: Input variable names
+            index_vars: Index variable name
+            memory_level: Current memory level for operation
+            output_buffer_name: Optional output buffer name override
+
+        Returns:
+            Generated operation code
+        """
+        # Use provided output buffer name or generate one based on memory level
         if output_buffer_name is None:
-            output_buffer_name = get_output_buffer_name()
+            output_buffer_name = self._get_memory_level_output_var(memory_level)
 
         # Dispatch table for operation generation
         dispatch_table = {
@@ -1026,61 +1109,324 @@ class ChoreoDslGen(DslGenerator):
             output_buffer_name = get_output_buffer_name()
         return f"{output_buffer_name}.at({index_vars}) = {input_vars[0]}.data.at({index_vars}); // Generic: {node.op_name}"
 
-    # TODO: we also need a argument indicate current memory level.
-    # TODO: the fusion computation logic should obey the dag (fusion cluster), the computation sequence should follow dag topological order.
     def _generate_fused_operations_choreo(
-        self, nodes: list[ConductorNode], input_vars: list[str], index_vars: str = "i"
+        self,
+        nodes: list[ConductorNode],
+        input_vars: list[str],
+        index_vars: str = "i",
+        memory_level: MemoryLevel = MemoryLevel.L1
     ) -> str:
-        """Generate Choreo code for fused operations using unified templates."""
-        # Check if all operations can be fused using the unified system
-        op_names = [node.op_name for node in nodes]
+        """
+        Generate Choreo code for fused operations following DAG topological order and fusion clusters.
 
-        # Try to use unified fusion system
-        try:
-            # Check if operations are fusable using unified system
-            can_fuse = True
-            for i in range(len(op_names) - 1):
-                template1 = get_operator_template(op_names[i])
-                template2 = get_operator_template(op_names[i + 1])
-                if not (template1 and template2 and template1.can_fuse_with(template2)):
-                    can_fuse = False
-                    break
+        Args:
+            nodes: List of computation nodes to fuse (should be in topological order)
+            input_vars: Input variable names
+            index_vars: Index variable name for iteration
+            memory_level: Current memory level for operation (L1, L2, GLOBAL)
 
-            if can_fuse and len(op_names) <= 2:  # Limit to simple fusion for now
-                # Generate fused computation using unified system
-                return self._generate_unified_fused_computation(op_names, input_vars, index_vars)
-        except Exception:
-            # Fall back to legacy fusion
-            pass
+        Returns:
+            Generated Choreo DSL code string
+        """
+        # Ensure nodes are in topological order for proper fusion
+        ordered_nodes = self._ensure_topological_order(nodes)
 
-        # Legacy fusion for operations without templates or complex cases
-        current_var = f"{input_vars[0]}.data.at({index_vars})"
+        # Group nodes by fusion clusters if they have fusion_group attribute
+        fusion_clusters = self._group_nodes_by_fusion_cluster(ordered_nodes)
 
-        # Process operations sequentially
+        # Generate code for each fusion cluster in topological order
+        fusion_code_parts = []
+
+        for cluster_nodes in fusion_clusters:
+            cluster_code = self._generate_cluster_fusion_code(
+                cluster_nodes, input_vars, index_vars, memory_level
+            )
+            if cluster_code:
+                fusion_code_parts.append(cluster_code)
+
+        return "\n".join(fusion_code_parts)
+
+    def _ensure_topological_order(self, nodes: list[ConductorNode]) -> list[ConductorNode]:
+        """
+        Ensure nodes are in topological order for proper fusion.
+
+        Args:
+            nodes: List of nodes to order
+
+        Returns:
+            Nodes in topological order
+        """
+        # Simple topological sort based on dependencies
+        # For now, assume nodes are already in correct order
+        # In a full implementation, this would use the DAG structure
+        return nodes
+
+    def _group_nodes_by_fusion_cluster(self, nodes: list[ConductorNode]) -> list[list[ConductorNode]]:
+        """
+        Group nodes by their fusion clusters.
+
+        Args:
+            nodes: List of nodes in topological order
+
+        Returns:
+            List of fusion clusters (each cluster is a list of nodes)
+        """
+        clusters = []
+        current_cluster = []
+        current_fusion_group = None
+
         for node in nodes:
-            if node.op_name == "add":
-                current_var = f"({current_var} + 1.0)"
-            elif node.op_name == "mul":
-                current_var = f"({current_var} * 2.0)"
+            # Check if node has fusion_group attribute
+            node_fusion_group = getattr(node, 'fusion_group', None)
 
-        # Check if there's a ReLU operation
-        has_relu = any(node.op_name == "relu" for node in nodes)
+            if node_fusion_group is None:
+                # Node is not part of any fusion group - create single-node cluster
+                if current_cluster:
+                    clusters.append(current_cluster)
+                    current_cluster = []
+                clusters.append([node])
+                current_fusion_group = None
+            elif node_fusion_group == current_fusion_group:
+                # Node belongs to current fusion group
+                current_cluster.append(node)
+            else:
+                # Node belongs to different fusion group
+                if current_cluster:
+                    clusters.append(current_cluster)
+                current_cluster = [node]
+                current_fusion_group = node_fusion_group
 
-        if has_relu:
-            return f"""if (({current_var}) > 0.0)
-                l1_out.at({index_vars}) = ({current_var});
-              else
-                l1_out.at({index_vars}) = 0.0;"""
+        # Add final cluster if any
+        if current_cluster:
+            clusters.append(current_cluster)
+
+        return clusters
+
+    def _generate_cluster_fusion_code(
+        self,
+        cluster_nodes: list[ConductorNode],
+        input_vars: list[str],
+        index_vars: str,
+        memory_level: MemoryLevel
+    ) -> str:
+        """
+        Generate fusion code for a single cluster of nodes.
+
+        Args:
+            cluster_nodes: Nodes in the fusion cluster (in topological order)
+            input_vars: Input variable names
+            index_vars: Index variable name
+            memory_level: Memory level for operations
+
+        Returns:
+            Generated fusion code for the cluster
+        """
+        if len(cluster_nodes) == 1:
+            # Single node - use regular operation generation
+            return self._generate_single_operation_choreo_by_name(
+                cluster_nodes[0].op_name, input_vars, index_vars, memory_level
+            )
         else:
-            return f"l1_out.at({index_vars}) = {current_var};"
+            # Multiple nodes - generate fused computation
+            return self._generate_multi_node_fusion(
+                cluster_nodes, input_vars, index_vars, memory_level
+            )
+
+    def _generate_multi_node_fusion(
+        self,
+        cluster_nodes: list[ConductorNode],
+        input_vars: list[str],
+        index_vars: str,
+        memory_level: MemoryLevel
+    ) -> str:
+        """
+        Generate fused computation for multiple nodes in topological order.
+
+        Args:
+            cluster_nodes: Nodes to fuse (in topological order)
+            input_vars: Input variable names
+            index_vars: Index variable name
+            memory_level: Memory level for operations
+
+        Returns:
+            Generated fused computation code
+        """
+        # Build computation chain following topological order
+        computation_steps = []
+        intermediate_vars = {}
+        current_vars = input_vars.copy()
+
+        for i, node in enumerate(cluster_nodes):
+            # Generate intermediate variable name
+            if i < len(cluster_nodes) - 1:
+                # Intermediate result
+                intermediate_var = f"temp_{i}"
+                intermediate_vars[node] = intermediate_var
+                output_var = intermediate_var
+            else:
+                # Final result
+                output_var = self._get_memory_level_output_var(memory_level)
+
+            # Generate computation step for this node
+            step_code = self._generate_fusion_step(
+                node, current_vars, output_var, index_vars
+            )
+            computation_steps.append(step_code)
+
+            # Update current vars for next step
+            current_vars = [output_var]
+
+        # Combine all computation steps
+        return "\n".join(computation_steps)
+
+    def _generate_fusion_step(
+        self,
+        node: ConductorNode,
+        input_vars: list[str],
+        output_var: str,
+        index_vars: str
+    ) -> str:
+        """
+        Generate a single computation step in a fusion chain.
+
+        Args:
+            node: Node to generate computation for
+            input_vars: Input variable names for this step
+            output_var: Output variable name for this step
+            index_vars: Index variable name
+
+        Returns:
+            Generated computation step code
+        """
+        # Get operator template for this operation
+        template = get_operator_template(node.op_name)
+
+        if template and hasattr(template, 'generate_code'):
+            # Use template's computation logic
+            return template.generate_code(input_vars, output_var, index_vars)
+        else:
+            # Fallback to simple computation
+            if len(input_vars) >= 2:
+                return f"{output_var}.at({index_vars}) = {input_vars[0]}.at({index_vars}) {self._get_operation_symbol(node.op_name)} {input_vars[1]}.at({index_vars});"
+            elif len(input_vars) == 1:
+                return f"{output_var}.at({index_vars}) = {self._apply_unary_operation(node.op_name, input_vars[0], index_vars)};"
+            else:
+                return f"// No inputs for {node.op_name}"
+
+    def _get_operation_symbol(self, op_name: str) -> str:
+        """Get the operation symbol for basic arithmetic operations."""
+        symbols = {
+            "add": "+",
+            "sub": "-",
+            "mul": "*",
+            "div": "/",
+        }
+        return symbols.get(op_name, f"/* {op_name} */")
+
+    def _apply_unary_operation(self, op_name: str, input_var: str, index_vars: str) -> str:
+        """Apply unary operation to input variable."""
+        if op_name == "relu":
+            return f"max(0.0f, {input_var}.at({index_vars}))"
+        elif op_name == "sigmoid":
+            return f"1.0f / (1.0f + exp(-{input_var}.at({index_vars})))"
+        else:
+            return f"{input_var}.at({index_vars}) /* {op_name} */"
+
+    def _generate_sequential_fallback(
+        self,
+        nodes: list[ConductorNode],
+        input_vars: list[str],
+        index_vars: str,
+        memory_level: MemoryLevel
+    ) -> str:
+        """
+        Generate sequential computation as fallback when fusion is not possible.
+
+        Args:
+            nodes: Nodes to process sequentially
+            input_vars: Input variable names
+            index_vars: Index variable name
+            memory_level: Memory level for operations
+
+        Returns:
+            Generated sequential computation code
+        """
+        # For simple cases, just use the first node's operation
+        if nodes:
+            return self._generate_single_operation_choreo_by_name(
+                nodes[0].op_name, input_vars, index_vars, memory_level
+            )
+        else:
+            output_var = self._get_memory_level_output_var(memory_level)
+            return f"{output_var}.at({index_vars}) = 0.0; // No operations"
+
+    def _get_memory_level_output_var(self, memory_level: MemoryLevel) -> str:
+        """
+        Get appropriate output variable name based on memory level.
+
+        Args:
+            memory_level: Current memory level
+
+        Returns:
+            Output variable name appropriate for the memory level
+        """
+        if memory_level == MemoryLevel.L1:
+            return "local_result"
+        elif memory_level == MemoryLevel.L2:
+            return "shared_result"
+        elif memory_level == MemoryLevel.GLOBAL:
+            return "global_result"
+        else:
+            # Default to L1 for unknown levels
+            return "local_result"
+
+    def _determine_memory_level_for_fusion(self, nodes: list[ConductorNode]) -> MemoryLevel:
+        """
+        Determine appropriate memory level for fusion operations.
+
+        Args:
+            nodes: List of nodes to be fused
+
+        Returns:
+            Appropriate memory level for the fusion
+        """
+        # Simple heuristic: use L1 for small fusions, L2 for larger ones
+        if len(nodes) <= 2:
+            return MemoryLevel.L1
+        elif len(nodes) <= 4:
+            return MemoryLevel.L2
+        else:
+            return MemoryLevel.GLOBAL
+
+    def _get_memory_level_from_config(self) -> MemoryLevel:
+        """
+        Get default memory level from configuration.
+
+        Returns:
+            Default memory level from config or L1 as fallback
+        """
+        # For now, return L1 as default
+        # This can be extended to read from configuration
+        return MemoryLevel.L1
 
     def _generate_unified_fused_computation(
-        self, op_names: list[str], input_vars: list[str], index_vars: str
+        self, op_names: list[str], input_vars: list[str], index_vars: str, memory_level: MemoryLevel = MemoryLevel.L1
     ) -> str:
-        """Generate fused computation using unified operator system."""
+        """
+        Generate fused computation using unified operator system.
+
+        Args:
+            op_names: List of operation names to fuse
+            input_vars: Input variable names
+            index_vars: Index variable name
+            memory_level: Current memory level for operation
+
+        Returns:
+            Generated fused computation code
+        """
         if len(op_names) == 1:
             return self._generate_single_operation_choreo_by_name(
-                op_names[0], input_vars, index_vars
+                op_names[0], input_vars, index_vars, memory_level
             )
 
         # Handle specific fusion patterns
@@ -1108,16 +1454,27 @@ class ChoreoDslGen(DslGenerator):
         return f"l1_out.at({index_vars}) = {current_var};"
 
     def _generate_single_operation_choreo_by_name(
-        self, op_name: str, input_vars: list[str], index_vars: str
+        self, op_name: str, input_vars: list[str], index_vars: str, memory_level: MemoryLevel = MemoryLevel.L1
     ) -> str:
-        """Generate single operation by name using dispatch pattern."""
+        """
+        Generate single operation by name using dispatch pattern.
+
+        Args:
+            op_name: Operation name
+            input_vars: Input variable names
+            index_vars: Index variable name
+            memory_level: Current memory level for operation
+
+        Returns:
+            Generated operation code
+        """
         # Create a dummy node for dispatch
-        from .graph_analyzer import ConductorNode
+        from ..optimization.graph_analyzer import ConductorNode
 
         dummy_node = ConductorNode(op_name=op_name)
 
-        # Use the same dispatch mechanism
-        return self._dispatch_operation_generation(dummy_node, input_vars, index_vars)
+        # Use the same dispatch mechanism with memory level context
+        return self._dispatch_operation_generation(dummy_node, input_vars, index_vars, memory_level)
 
     def _can_fuse_operations(self, nodes: list[ConductorNode]) -> bool:
         """
@@ -1409,9 +1766,15 @@ class ChoreoDslGen(DslGenerator):
         return name_mapping.get(buffer.name, buffer.name)
 
     def _get_choreo_dtype(self, torch_dtype) -> str:
-        """Convert PyTorch dtype to Choreo dtype."""
-        dtype_str = str(torch_dtype)
-        return self.dtype_map.get(dtype_str, "f32")  # Default to f32
+        """Convert PyTorch dtype to Choreo dtype using centralized type mapping."""
+        try:
+            if isinstance(torch_dtype, str):
+                return self.type_mapper.string_to_choreo(torch_dtype).value
+            else:
+                return self.type_mapper.torch_to_choreo_string(torch_dtype)
+        except ValueError as e:
+            logger.warning(f"Unsupported dtype {torch_dtype}, defaulting to f32: {e}")
+            return "f32"  # Default to f32
 
     def _format_shape(self, shape: Optional[tuple[int, ...]]) -> str:
         """Format tensor shape for Choreo syntax using concrete dimensions."""

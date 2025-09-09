@@ -1,0 +1,7 @@
+{#- Choreo DSL Parallel Loop Template -#}
+parallel {{ parallel_var }} by {{ parallel_factor }}
+  foreach {{ index_var }} in [{{ chunk_size }}] {
+{%- for line in body_lines %}
+    {{ line }}
+{%- endfor %}
+  }

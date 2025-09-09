@@ -114,16 +114,34 @@ class OperatorInfo:
         if self.code_gen_fn:
             return self.code_gen_fn(input_vars, output_var, index_vars, tensor_rank)
         elif self.code_template:
-            # Use multi-dimensional indexing in template
+            # Smart variable access - DMA loads have .data, local buffers don't
+            def format_input_access(var_name: str) -> str:
+                if var_name.startswith("l1_load__") or var_name.startswith("l2_load__"):
+                    return f"{var_name}.data.at({index_str})"
+                else:
+                    return f"{var_name}.at({index_str})"
+
+            # Format inputs with smart access pattern
+            input0_access = format_input_access(input_vars[0]) if len(input_vars) > 0 else "input"
+            input1_access = format_input_access(input_vars[1]) if len(input_vars) > 1 else "input"
+
+            # Use template with smart variable access
             return self.code_template.format(
                 output=output_var,
-                input0=input_vars[0] if len(input_vars) > 0 else "input",
-                input1=input_vars[1] if len(input_vars) > 1 else "input",
+                input0_access=input0_access,
+                input1_access=input1_access,
                 index=index_str,
             )
         else:
-            # Fallback with proper multi-dimensional indexing
-            return f"{output_var}.at({index_str}) = {input_vars[0]}.data.at({index_str});"
+            # Fallback with smart access pattern
+            if len(input_vars) > 0:
+                if input_vars[0].startswith("l1_load__") or input_vars[0].startswith("l2_load__"):
+                    input_access = f"{input_vars[0]}.data.at({index_str})"
+                else:
+                    input_access = f"{input_vars[0]}.at({index_str})"
+                return f"{output_var}.at({index_str}) = {input_access};"
+            else:
+                return f"{output_var}.at({index_str}) = 0.0; // No inputs"
 
     def substitute_parameters(self, **params) -> str:
         """Substitute parameters in the template if available."""
@@ -184,7 +202,7 @@ class OperatorRegistry:
                 BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input),
             ],
             output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
-            code_template="{output}.at({index}) = {input0}.data.at({index}) + {input1}.data.at({index});",
+            code_template="{output}.at({index}) = {input0_access} + {input1_access};",
             fusable=True,
         )
 
@@ -197,7 +215,7 @@ class OperatorRegistry:
                 BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input),
             ],
             output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
-            code_template="{output}.at({index}) = {input0}.data.at({index}) * {input1}.data.at({index});",
+            code_template="{output}.at({index}) = {input0_access} * {input1_access};",
             fusable=True,
         )
 
@@ -210,7 +228,7 @@ class OperatorRegistry:
                 BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input),
             ],
             output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
-            code_template="{output}.at({index}) = {input0}.data.at({index}) - {input1}.data.at({index});",
+            code_template="{output}.at({index}) = {input0_access} - {input1_access};",
             fusable=True,
         )
 
@@ -223,7 +241,7 @@ class OperatorRegistry:
                 BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input),
             ],
             output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
-            code_template="{output}.at({index}) = {input0}.data.at({index}) / {input1}.data.at({index});",
+            code_template="{output}.at({index}) = {input0_access} / {input1_access};",
             fusable=True,
         )
 
@@ -233,7 +251,7 @@ class OperatorRegistry:
             operation_type=OpType.ACTIVATION,
             input_buffers=[BufferSpec("input", dtype=torch.float32, shape_fn=same_as_input)],
             output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
-            code_template="{output}.at({index}) = {input0}.data.at({index}); // ReLU placeholder",
+            code_template="{output}.at({index}) = {input0_access}; // ReLU placeholder",
             fusable=True,
         )
 
@@ -420,19 +438,22 @@ class OperatorRegistry:
         return set(self._operators.keys())
 
 
-# Global registry instance
-operator_registry = OperatorRegistry()
+# Convenience functions for accessing the registry through context
+def get_operator_registry() -> OperatorRegistry:
+    """Get the operator registry from the global context."""
+    from ..context import ensure_context_initialized
+    context = ensure_context_initialized()
+    return context.get_operator_registry()
 
 
-# Convenience functions for backward compatibility
 def get_op_desc(op_name: str) -> Optional[OperatorInfo]:
     """Get operation descriptor by name."""
-    return operator_registry.get_operation(op_name)
+    return get_operator_registry().get_operation(op_name)
 
 
 def get_operator_template(name: str) -> Optional[OperatorInfo]:
     """Get operator template by name."""
-    return operator_registry.get_operation(name)
+    return get_operator_registry().get_operation(name)
 
 
 def is_elementwise(op_name: str) -> bool:
@@ -455,10 +476,19 @@ def requires_device_kernel(op_name: str) -> bool:
 
 def get_device_kernel_operations() -> Set[str]:
     """Get all operations that require device kernels."""
-    return operator_registry.get_device_kernel_operations()
+    return get_operator_registry().get_device_kernel_operations()
 
 
 # Backward compatibility aliases
-unified_registry = operator_registry
-simple_unified_registry = operator_registry
-unified_operation_registry = operator_registry
+def get_unified_registry():
+    """Get unified registry (backward compatibility)."""
+    return get_operator_registry()
+
+
+def get_simple_unified_registry():
+    """Get simple unified registry (backward compatibility)."""
+    return get_operator_registry()
+# Backward compatibility alias
+def get_unified_operation_registry():
+    """Get unified operation registry (backward compatibility)."""
+    return get_operator_registry()

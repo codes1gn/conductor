@@ -1,0 +1,17 @@
+{#- Choreo DSL Function Template -#}
+__co__ auto {{ function_name }}(
+{%- for param in input_params %}
+  {{ param.dtype | dtype }} {{ param.shape | shape }} {{ param.name }}
+  {%- if not loop.last %},{% endif %}
+{%- endfor %}
+) {
+{%- for decl in declarations %}
+  {{ decl | indent(2) }}
+{%- endfor %}
+
+{%- if parallel_section %}
+{{ parallel_section | indent(2) }}
+{%- endif %}
+
+  return {{ return_value }};
+}

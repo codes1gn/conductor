@@ -310,15 +310,13 @@ class DeviceKernelRegistry:
         logger.info("Initialized built-in device kernels")
 
 
-# Global device kernel registry
-device_kernel_registry = DeviceKernelRegistry()
-
-
 def get_device_kernel_registry() -> DeviceKernelRegistry:
-    """Get the global device kernel registry."""
-    return device_kernel_registry
+    """Get the device kernel registry from the global context."""
+    from ..context import ensure_context_initialized
+    context = ensure_context_initialized()
+    return context.get_device_kernel_registry()
 
 
 def register_device_kernel(kernel: DeviceKernel) -> None:
     """Register a device kernel globally."""
-    device_kernel_registry.register_kernel(kernel)
+    get_device_kernel_registry().register_kernel(kernel)

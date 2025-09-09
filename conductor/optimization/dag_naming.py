@@ -1,8 +1,8 @@
 """
-DAG Naming and Topological Sorting for Conductor.
+DAG Naming and Topological Analysis for Conductor.
 
 This module provides systematic naming and topological analysis of computation DAGs,
-ensuring consistent identifier generation and proper execution ordering.
+ensuring consistent identifier generation and proper execution ordering for optimization.
 """
 
 from __future__ import annotations
@@ -201,7 +201,8 @@ class DAGNamingAnnotator:
         self, node: "ConductorNode", index: int, annotation: DAGNamingAnnotation
     ) -> NodeNaming:
         """Annotate a single node with naming information."""
-        from ..codegen.operator_registry import operator_registry
+        from ..codegen.operator_registry import get_operator_registry
+        operator_registry = get_operator_registry()
 
         node_id = self._get_node_id(node)
 

@@ -24,11 +24,18 @@ logger = get_logger(__name__)
 
 @dataclass
 class DebugConfig:
-    """Simplified debug configuration."""
+    """Debug and tracing configuration."""
 
     enabled: bool = False
     max_tensor_elements: int = 100
     indent_size: int = 2
+
+    # Tracing configuration
+    trace_dag: bool = True
+    trace_dsl: bool = True
+    trace_compilation: bool = True
+    trace_execution: bool = False
+    verbose_level: int = 1
 
 
 @dataclass
@@ -47,6 +54,12 @@ class CompilationConfig:
     timeout_seconds: int = 300
     optimization_level: str = "O2"
     enable_fusion: bool = True
+    dsl_indent_size: int = 2
+
+    # Graph analysis switches
+    enable_graph_validation: bool = True
+    enable_shape_inference: bool = True
+    enable_buffer_optimization: bool = True
 
 
 @dataclass
@@ -138,6 +151,11 @@ class ConductorConfig:
             enabled=enabled,
             max_tensor_elements=debug_data.get("max_tensor_elements", 100),
             indent_size=debug_data.get("indent_size", 2),
+            trace_dag=debug_data.get("trace_dag", True),
+            trace_dsl=debug_data.get("trace_dsl", True),
+            trace_compilation=debug_data.get("trace_compilation", True),
+            trace_execution=debug_data.get("trace_execution", False),
+            verbose_level=debug_data.get("verbose_level", 1),
         )
 
     def _create_cache_config(self) -> CacheConfig:
@@ -162,6 +180,10 @@ class ConductorConfig:
             timeout_seconds=comp_data.get("timeout_seconds", 300),
             optimization_level=comp_data.get("optimization_level", "O2"),
             enable_fusion=comp_data.get("enable_fusion", True),
+            dsl_indent_size=comp_data.get("dsl_indent_size", 2),
+            enable_graph_validation=comp_data.get("enable_graph_validation", True),
+            enable_shape_inference=comp_data.get("enable_shape_inference", True),
+            enable_buffer_optimization=comp_data.get("enable_buffer_optimization", True),
         )
 
     def _create_runtime_config(self) -> RuntimeConfig:

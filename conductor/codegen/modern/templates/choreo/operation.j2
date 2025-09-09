@@ -1,0 +1,13 @@
+{#- Choreo DSL Operation Template -#}
+{%- if operation.op_name == "add" %}
+{{ output_var }}.at({{ index_vars }}) = {{ input_vars[0] }}.data.at({{ index_vars }}) + {{ input_vars[1] }}.data.at({{ index_vars }});
+{%- elif operation.op_name == "mul" %}
+{{ output_var }}.at({{ index_vars }}) = {{ input_vars[0] }}.data.at({{ index_vars }}) * {{ input_vars[1] }}.data.at({{ index_vars }});
+{%- elif operation.op_name == "sub" %}
+{{ output_var }}.at({{ index_vars }}) = {{ input_vars[0] }}.data.at({{ index_vars }}) - {{ input_vars[1] }}.data.at({{ index_vars }});
+{%- elif operation.op_name == "div" %}
+{{ output_var }}.at({{ index_vars }}) = {{ input_vars[0] }}.data.at({{ index_vars }}) / {{ input_vars[1] }}.data.at({{ index_vars }});
+{%- else %}
+// Unsupported operation: {{ operation.op_name }}
+{{ output_var }}.at({{ index_vars }}) = {{ input_vars[0] }}.data.at({{ index_vars }});
+{%- endif %}

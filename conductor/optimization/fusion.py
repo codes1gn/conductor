@@ -1,8 +1,9 @@
 """
-Operation fusion logic and heuristics.
+Operation fusion optimization and heuristics.
 
 This module implements the fusion engine that identifies opportunities
 to combine compatible operations for performance optimization.
+Core optimization component for the Conductor compilation pipeline.
 """
 
 from __future__ import annotations

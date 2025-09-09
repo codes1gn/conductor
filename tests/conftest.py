@@ -14,10 +14,10 @@ from unittest.mock import Mock, patch
 from typing import Dict, Any, List, Optional
 
 import conductor
-from conductor.graph.buffers import Buffer, BufferScope, BufferManager
-from conductor.graph.graph_analyzer import ComputationDAG, GraphAnalyzer
-from conductor.graph.graph_nodes import ConductorNode
-from conductor.graph.fusion import FusionCluster, FusionEngine
+from conductor.optimization.buffers import Buffer, BufferScope, BufferManager
+from conductor.optimization.graph_analyzer import ComputationDAG, GraphAnalyzer
+from conductor.optimization.graph_nodes import ConductorNode
+from conductor.optimization.fusion import FusionCluster, FusionEngine
 from conductor.codegen.dslgen import ChoreoDslGen as DSLGenerator
 from conductor.compiler.jit_compiler import JITCompiler
 from conductor.compiler.loader import CompiledArtifact, ExecutableKernel

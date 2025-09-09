@@ -89,7 +89,7 @@ class DebugTracer:
         print(fx_graph.graph)
 
         # Print code representation
-        self.print_section_header("Generated Code", 2)
+        self.print_section_header("Python Code", 2)
         print(fx_graph.code)
 
         # Print node details

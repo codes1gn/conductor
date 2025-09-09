@@ -268,4 +268,8 @@ class DMAGenerator:
 
 
 # Global instance for use across DSL generation
-dma_generator = DMAGenerator()
+def get_dma_generator() -> DMAGenerator:
+    """Get the DMA generator from the global context."""
+    from ..context import ensure_context_initialized
+    context = ensure_context_initialized()
+    return context.get_dma_generator()
