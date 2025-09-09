@@ -295,6 +295,51 @@ class OperatorRegistry:
             fusable=False,
         )
 
+        # Define reduce_mean shape function
+        def reduce_mean_shape(shapes: list[tuple[int, ...]], ctx: dict[str, Any]) -> tuple[int, ...]:
+            """Compute output shape for reduce_mean operation."""
+            if not shapes:
+                return (1,)
+
+            input_shape = shapes[0]
+            dim = ctx.get('dim', None)
+            keepdim = ctx.get('keepdim', False)
+
+            if dim is None:
+                # Reduce all dimensions
+                return (1,) if keepdim else ()
+
+            # Reduce specific dimension
+            if isinstance(dim, int):
+                dims_to_reduce = [dim]
+            else:
+                dims_to_reduce = list(dim)
+
+            output_shape = list(input_shape)
+            for d in sorted(dims_to_reduce, reverse=True):
+                if keepdim:
+                    output_shape[d] = 1
+                else:
+                    output_shape.pop(d)
+
+            return tuple(output_shape) if output_shape else (1,)
+
+        reduce_mean_op = OperatorInfo(
+            name="reduce_mean",
+            canonical_name="reduce_mean",
+            operation_type=OpType.REDUCTION,
+            input_buffers=[BufferSpec("input", dtype=torch.float32, shape_fn=same_as_input)],
+            output_buffers=[
+                BufferSpec(
+                    "output",
+                    dtype=torch.float32,
+                    shape_fn=reduce_mean_shape,
+                )
+            ],
+            code_template="// Reduce mean - requires special handling",
+            fusable=True,  # Allow fusion with elementwise operations
+        )
+
         # Complex operations requiring device kernels
         conv2d_op = OperatorInfo(
             name="conv2d",
@@ -332,6 +377,7 @@ class OperatorRegistry:
             relu_op,
             matmul_op,
             sum_op,
+            reduce_mean_op,
             conv2d_op,
             attention_op,
         ]

@@ -43,6 +43,8 @@ class OperationFactory:
         # Handle common aliases
         if name in ["mm", "bmm"]:
             return "matmul"
+        elif name == "mean":
+            return "reduce_mean"
 
         return name
 

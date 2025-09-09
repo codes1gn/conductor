@@ -62,6 +62,54 @@ class ConductorNode:
         """Check if this operation is a reduction."""
         return is_reduction(self.op_name)
 
+    def can_fuse_with(self, other: 'ConductorNode') -> bool:
+        """
+        Check if this node can be fused with another node.
+
+        Args:
+            other: Another ConductorNode to check fusion compatibility with
+
+        Returns:
+            True if nodes can be fused, False otherwise
+        """
+        # Import fusion heuristics to check compatibility
+        from .fusion import FusionHeuristics
+        heuristics = FusionHeuristics()
+
+        # Check different fusion patterns
+        # 1. Both elementwise operations
+        if self.is_elementwise() and other.is_elementwise():
+            return heuristics.can_fuse_elementwise(self.op_name, other.op_name)
+
+        # 2. Reduction + elementwise operations
+        if self.is_reduction() and other.is_elementwise():
+            return heuristics.can_fuse_elementwise(self.op_name, other.op_name)
+
+        # 3. Elementwise + reduction operations
+        if self.is_elementwise() and other.is_reduction():
+            return heuristics.can_fuse_elementwise(self.op_name, other.op_name)
+
+        # Other combinations are not supported
+        return False
+
+    def generate_dsl(self) -> str:
+        """
+        Generate DSL code for this node.
+
+        Returns:
+            DSL code string for this operation
+        """
+        # Simple DSL generation - this would be expanded based on operation type
+        if self.op_name == "add":
+            return f"{self.outputs[0].name} = {self.inputs[0].name} + {self.inputs[1].name}"
+        elif self.op_name == "mul":
+            return f"{self.outputs[0].name} = {self.inputs[0].name} * {self.inputs[1].name}"
+        else:
+            # Generic operation
+            input_names = [inp.name if hasattr(inp, 'name') else str(inp) for inp in self.inputs]
+            output_names = [out.name if hasattr(out, 'name') else str(out) for out in self.outputs]
+            return f"{', '.join(output_names)} = {self.op_name}({', '.join(input_names)})"
+
     def __str__(self) -> str:
         return f"ConductorNode(op={self.op_name}, inputs={self.inputs}, outputs={self.outputs})"
 

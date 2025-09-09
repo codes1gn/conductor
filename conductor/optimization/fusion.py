@@ -346,6 +346,19 @@ class FusionEngine:
                         clusters.append(cluster)
                         visited_nodes.update(fusion_nodes)
 
+        # Find reduction + elementwise patterns (reduction followed by elementwise)
+        for node in dag.nodes:
+            if node not in visited_nodes and self._is_reduction_op(node.op_name):
+                # Look for elementwise operations that consume this reduction's output
+                elementwise_consumers = self._find_elementwise_consumers(node, dag, visited_nodes)
+                if elementwise_consumers:
+                    fusion_nodes = [node] + elementwise_consumers
+                    cluster = self.apply_reduction_fusion(fusion_nodes)
+                    self._populate_cluster_buffers(cluster, dag)
+                    if cluster.validate_fusion_safety():
+                        clusters.append(cluster)
+                        visited_nodes.update(fusion_nodes)
+
         return clusters
 
     def _is_elementwise_op(self, op_name: str) -> bool:
@@ -370,7 +383,7 @@ class FusionEngine:
 
     def _is_reduction_op(self, op_name: str) -> bool:
         """Check if operation is a reduction."""
-        reduction_ops = {"sum", "mean", "max", "min", "argmax", "argmin"}
+        reduction_ops = {"sum", "mean", "reduce_mean", "max", "min", "argmax", "argmin"}
         return op_name in reduction_ops
 
     def _find_elementwise_chain(
@@ -393,14 +406,13 @@ class FusionEngine:
                     if (
                         consumer not in visited
                         and self._is_elementwise_op(consumer.op_name)
-                        and len(consumer.inputs) == 1
-                    )  # Single input for simple chaining
+                    )  # Allow multi-input elementwise operations for fusion
                 ]
 
                 if len(elementwise_consumers) == 1:
                     candidate = elementwise_consumers[0]
-                    # Check if this consumer only has one producer (our current node)
-                    if len(candidate.inputs) == 1 and candidate.inputs[0] == output_buffer:
+                    # Check if this consumer uses our output buffer as one of its inputs
+                    if output_buffer in candidate.inputs:
                         next_node = candidate
 
             if next_node is None:
@@ -426,6 +438,22 @@ class FusionEngine:
                         producers.append(producer)
 
         return producers
+
+    def _find_elementwise_consumers(
+        self, reduction_node: ConductorNode, dag: ComputationDAG, visited: set
+    ) -> list[ConductorNode]:
+        """Find elementwise operations that consume a reduction's output."""
+        consumers = []
+
+        for output_buffer in reduction_node.outputs:
+            for consumer in output_buffer.consumers:
+                if consumer not in visited and self._is_elementwise_op(consumer.op_name):
+                    # Check if this consumer can be fused with the reduction
+                    heuristics = FusionHeuristics()
+                    if heuristics.can_fuse_elementwise(reduction_node.op_name, consumer.op_name):
+                        consumers.append(consumer)
+
+        return consumers
 
     def _populate_cluster_buffers(self, cluster: FusionCluster, dag: "ComputationDAG") -> None:
         """Populate external inputs, outputs, and internal buffers for a cluster."""
@@ -635,11 +663,24 @@ class FusionHeuristics:
             "cos",
         }
 
+        # Reduction operations that can fuse with elementwise
+        reduction_ops = {"reduce_mean", "sum", "mean"}
+
         # ReLU is excluded from fusion due to Choreo syntax limitations
         non_fusible_ops = {"relu"}
 
-        # Both operations must be elementwise and fusible
-        if not (op1 in elementwise_ops and op2 in elementwise_ops):
+        # Check if operations can be fused
+        op1_is_elementwise = op1 in elementwise_ops
+        op2_is_elementwise = op2 in elementwise_ops
+        op1_is_reduction = op1 in reduction_ops
+        op2_is_reduction = op2 in reduction_ops
+
+        # Allow fusion between elementwise and reduction operations
+        if (op1_is_elementwise and op2_is_elementwise) or \
+           (op1_is_elementwise and op2_is_reduction) or \
+           (op1_is_reduction and op2_is_elementwise):
+            pass  # These combinations are allowed
+        else:
             return False
 
         # Prevent fusion with ReLU
@@ -651,6 +692,10 @@ class FusionHeuristics:
             ("div", "log"),
             ("log", "div"),  # Numerical stability issues
         }
+
+        # Special case: two reduce_mean operations on different dimensions cannot be fused
+        if op1 == "reduce_mean" and op2 == "reduce_mean":
+            return False  # Two reduce_mean operations cannot be fused together
 
         return (op1, op2) not in incompatible_pairs and (op2, op1) not in incompatible_pairs
 

@@ -17,7 +17,7 @@
   "compilation": {
     "timeout_seconds": 300,
     "optimization_level": "O2",
-    "enable_fusion": false 
+    "enable_fusion": true
   },
   
   "runtime": {

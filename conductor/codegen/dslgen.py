@@ -541,14 +541,21 @@ class ChoreoDslGen:
         # Declare local output buffers for each node
         for node_id in annotation.execution_order:
             naming = annotation.node_naming[node_id]
+
+            # Find the actual node to get its output shape
+            node = None
+            for dag_node in dag.nodes:
+                if self._get_node_id(dag_node) == node_id:
+                    node = dag_node
+                    break
+
             for output_var in naming.output_vars:
-                # Determine buffer shape based on actual tensor dimensions and chunking strategy
-                if dag.inputs and dag.inputs[0].shape:
-                    shape = dag.inputs[0].shape
+                # Determine buffer shape based on the node's actual output shape
+                if node and node.outputs and node.outputs[0].shape:
+                    # Use the actual output shape of this specific node
+                    shape = node.outputs[0].shape
                     if len(shape) == 2:
                         # For 2D tensors, match the chunkat behavior
-                        # chunkat(p, idx_i) typically chunks along the second dimension
-                        # For [16, 32] tensor with parallel factor 1 and 4 chunks, each chunk is [16, 8]
                         height = shape[0]
                         width = shape[1]
                         parallel_factor = self.generation_context.get_value(
@@ -560,15 +567,32 @@ class ChoreoDslGen:
                         chunk_width = width // chunk_size if chunk_size > 0 else width
                         buffer_shape = f"[{height}, {chunk_width}]"
                     elif len(shape) == 1:
-                        # For 1D tensors
-                        chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
-                        buffer_shape = f"[{chunk_size}]"
+                        # For 1D tensors, use the actual length
+                        buffer_shape = f"[{shape[0]}]"
                     else:
                         # For higher dimensions, use simplified 2D representation
                         chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
                         buffer_shape = f"[{chunk_size}, {chunk_size}]"
+                elif dag.inputs and dag.inputs[0].shape:
+                    # Fallback to input shape if node output shape is not available
+                    shape = dag.inputs[0].shape
+                    if len(shape) == 2:
+                        height = shape[0]
+                        width = shape[1]
+                        parallel_factor = self.generation_context.get_value(
+                            ContextKeys.PARALLEL_FACTOR
+                        )
+                        chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
+                        chunk_width = width // chunk_size if chunk_size > 0 else width
+                        buffer_shape = f"[{height}, {chunk_width}]"
+                    elif len(shape) == 1:
+                        chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
+                        buffer_shape = f"[{chunk_size}]"
+                    else:
+                        chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
+                        buffer_shape = f"[{chunk_size}, {chunk_size}]"
                 else:
-                    # Fallback
+                    # Final fallback
                     chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
                     buffer_shape = f"[{chunk_size}, {chunk_size}]"
 
@@ -618,25 +642,56 @@ class ChoreoDslGen:
                             # Fallback
                             actual_input_vars.append(f"unknown_input_{len(actual_input_vars)}")
 
+                # Determine tensor rank based on the node's output shape
+                node_tensor_rank = tensor_rank  # Default fallback
+                if node and node.outputs and node.outputs[0].shape:
+                    node_tensor_rank = len(node.outputs[0].shape)
+
                 # Generate operation code using operator template with proper tensor rank
                 computation = self._generate_operation_from_template(
                     node,
                     actual_input_vars,
                     naming.index_vars[0],
                     naming.output_vars[0],
-                    tensor_rank,
+                    node_tensor_rank,
                 )
 
-                # Generate proper nested foreach loops for multi-dimensional tensors
-                if tensor_rank == 2:
-                    # For 2D tensors, use dimensions that match the local buffer
+                # Generate proper nested foreach loops based on the node's output shape
+                if node and node.outputs and node.outputs[0].shape:
+                    output_shape = node.outputs[0].shape
+                    if len(output_shape) == 2:
+                        # For 2D output tensors
+                        height = output_shape[0]
+                        width = output_shape[1]
+                        lines.append(
+                            f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{height}] {{"
+                        )
+                        lines.append(
+                            f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{width}] {{"
+                        )
+                        lines.append(f"    {computation}")
+                        lines.append("  }")  # Close inner foreach
+                        lines.append("}")    # Close outer foreach
+                    elif len(output_shape) == 1:
+                        # For 1D output tensors
+                        length = output_shape[0]
+                        lines.append(
+                            f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{length}] {{"
+                        )
+                        lines.append(f"  {computation}")
+                        lines.append("}")  # Close foreach
+                    else:
+                        # For higher dimensions, use simplified approach
+                        lines.append(f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [1] {{")
+                        lines.append(f"  {computation}")
+                        lines.append("}")  # Close foreach
+                elif tensor_rank == 2:
+                    # Fallback to input shape if output shape is not available
                     if dag.inputs and dag.inputs[0].shape:
                         shape = dag.inputs[0].shape
                         height = shape[0]
                         width = shape[1]
                         chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
-
-                        # Calculate chunk dimensions to match buffer shape
                         chunk_width = width // chunk_size if chunk_size > 0 else width
                         lines.append(
                             f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{height}] {{"
@@ -648,7 +703,7 @@ class ChoreoDslGen:
                         lines.append("  }")  # Close inner foreach
                         lines.append("}")    # Close outer foreach
                     else:
-                        # Fallback
+                        # Final fallback
                         lines.append(f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [4] {{")
                         lines.append(f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [4] {{")
                         lines.append(f"    {computation}")
@@ -662,7 +717,7 @@ class ChoreoDslGen:
                     lines.append(f"  {computation}")
                     lines.append("}")  # Close foreach
                 else:
-                    # For higher dimensions, use simplified 2D approach
+                    # For higher dimensions, use simplified approach
                     chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
                     lines.append(
                         f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{chunk_size}] {{"

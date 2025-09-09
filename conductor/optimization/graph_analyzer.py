@@ -283,6 +283,56 @@ class GraphAnalyzer:
                                 f"Propagated matmul shape for {output_buffer.name}: {output_buffer.shape}"
                             )
 
+            elif node.op_name == "reduce_mean":
+                # For reduce_mean operations, infer output shape based on reduction dimensions
+                if node.inputs and node.outputs:
+                    input_buffer = node.inputs[0]
+                    output_buffer = node.outputs[0]
+
+                    if input_buffer.shape and not output_buffer.shape:
+                        # Get reduction parameters from node metadata
+                        dim = node.metadata.get('dim', None)
+                        keepdim = node.metadata.get('keepdim', False)
+
+                        old_shape = output_buffer.shape
+                        old_dtype = output_buffer.dtype
+
+                        if dim is None:
+                            # Reduce all dimensions
+                            output_shape = (1,) if keepdim else ()
+                        else:
+                            # Reduce specific dimension(s)
+                            input_shape = list(input_buffer.shape)
+                            if isinstance(dim, int):
+                                dims_to_reduce = [dim]
+                            else:
+                                dims_to_reduce = list(dim)
+
+                            # Handle negative dimensions
+                            dims_to_reduce = [d if d >= 0 else len(input_shape) + d for d in dims_to_reduce]
+
+                            for d in sorted(dims_to_reduce, reverse=True):
+                                if keepdim:
+                                    input_shape[d] = 1
+                                else:
+                                    input_shape.pop(d)
+
+                            output_shape = tuple(input_shape) if input_shape else (1,)
+
+                        output_buffer.shape = output_shape
+                        output_buffer.dtype = input_buffer.dtype
+                        shape_updates += 1
+
+                        if tracer.should_trace_dag():
+                            logger.info(f"    Shape update {shape_updates}: {output_buffer.name} (reduce_mean)")
+                            logger.info(f"      Input: {input_buffer.shape}, dim={dim}, keepdim={keepdim}")
+                            logger.info(f"      Shape: {old_shape} -> {output_buffer.shape}")
+                            logger.info(f"      Dtype: {old_dtype} -> {output_buffer.dtype}")
+
+                        logger.debug(
+                            f"Propagated shape for reduce_mean {output_buffer.name}: {output_buffer.shape}"
+                        )
+
         # Summary of shape propagation and update memory sizes
         if tracer.should_trace_dag():
             logger.info(f"  Shape propagation summary: {shape_updates} buffers updated")
