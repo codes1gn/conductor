@@ -19,12 +19,15 @@ logger = logging.getLogger(__name__)
 @dataclass
 class BufferSpec:
     """Specification for input/output buffers of an operation."""
-    name: str                                    # Buffer identifier (e.g., "lhs", "rhs", "output")
-    dtype: Optional[torch.dtype] = None         # Data type (None means infer from context)
-    shape_fn: Optional[Callable] = None         # Function to compute shape from input shapes
-    is_optional: bool = False                   # Whether this buffer is optional
 
-    def infer_shape(self, input_shapes: list[tuple[int, ...]], context: dict[str, Any] = None) -> tuple[int, ...]:
+    name: str  # Buffer identifier (e.g., "lhs", "rhs", "output")
+    dtype: Optional[torch.dtype] = None  # Data type (None means infer from context)
+    shape_fn: Optional[Callable] = None  # Function to compute shape from input shapes
+    is_optional: bool = False  # Whether this buffer is optional
+
+    def infer_shape(
+        self, input_shapes: list[tuple[int, ...]], context: dict[str, Any] = None
+    ) -> tuple[int, ...]:
         """Infer buffer shape from input shapes and context."""
         if self.shape_fn:
             return self.shape_fn(input_shapes, context or {})
@@ -38,6 +41,7 @@ class BufferSpec:
 
 class OpType(Enum):
     """Unified operation type classification."""
+
     ELEMENTWISE = "elementwise"
     REDUCTION = "reduction"
     MATRIX = "matrix"
@@ -51,6 +55,7 @@ class OpType(Enum):
 
 class ParallelStructure(Enum):
     """Types of parallel execution structures."""
+
     CHUNKED_PARALLEL = "chunked_parallel"
     SIMPLE_PARALLEL = "simple_parallel"
     SEQUENTIAL = "sequential"
@@ -66,16 +71,17 @@ class OperatorInfo:
     Complete operator information that dslgen uses to generate code.
     This is the single source of truth for all operator-related information.
     """
-    name: str                                           # Operation name (e.g., "add", "matmul")
-    canonical_name: str                                 # Canonical name for templates
+
+    name: str  # Operation name (e.g., "add", "matmul")
+    canonical_name: str  # Canonical name for templates
 
     # Buffer specifications - the key information dslgen needs
-    input_buffers: list[BufferSpec] = field(default_factory=list)   # Input buffer requirements
+    input_buffers: list[BufferSpec] = field(default_factory=list)  # Input buffer requirements
     output_buffers: list[BufferSpec] = field(default_factory=list)  # Output buffer requirements
 
     # Code generation information
-    code_template: Optional[str] = None                 # Choreo DSL template
-    code_gen_fn: Optional[Callable] = None             # Custom code generation function
+    code_template: Optional[str] = None  # Choreo DSL template
+    code_gen_fn: Optional[Callable] = None  # Custom code generation function
     parameter_substitutions: dict[str, str] = field(default_factory=dict)  # Parameter substitutions
 
     # Operation properties
@@ -91,7 +97,13 @@ class OperatorInfo:
         """Get output buffer specifications."""
         return self.output_buffers
 
-    def generate_code(self, input_vars: list[str], output_var: str, index_vars: list[str] = None, tensor_rank: int = 2) -> str:
+    def generate_code(
+        self,
+        input_vars: list[str],
+        output_var: str,
+        index_vars: list[str] = None,
+        tensor_rank: int = 2,
+    ) -> str:
         """Generate code for this operation with proper multi-dimensional indexing."""
         if index_vars is None:
             index_vars = ["i", "j"]  # Default for 2D tensors
@@ -107,27 +119,27 @@ class OperatorInfo:
                 output=output_var,
                 input0=input_vars[0] if len(input_vars) > 0 else "input",
                 input1=input_vars[1] if len(input_vars) > 1 else "input",
-                index=index_str
+                index=index_str,
             )
         else:
             # Fallback with proper multi-dimensional indexing
             return f"{output_var}.at({index_str}) = {input_vars[0]}.data.at({index_str});"
-    
+
     def substitute_parameters(self, **params) -> str:
         """Substitute parameters in the template if available."""
         if not self.code_template:
             raise ValueError(f"No template available for operator: {self.name}")
 
         result = self.code_template
-        
+
         # Apply default substitutions first
         for key, value in self.parameter_substitutions.items():
             result = result.replace(f"{{{key}}}", value)
-        
+
         # Apply provided parameters
         for key, value in params.items():
             result = result.replace(f"{{{key}}}", str(value))
-        
+
         return result
 
 
@@ -143,16 +155,20 @@ class OperatorRegistry:
         self._function_mappings: Dict[str, OperatorInfo] = {}
         self._method_mappings: Dict[str, OperatorInfo] = {}
         self._initialize_all_operators()
-    
+
     def _initialize_all_operators(self) -> None:
         """Initialize all operators with buffer specs and code generation."""
 
         # Helper functions for shape inference
-        def same_as_input(input_shapes: list[tuple[int, ...]], context: dict = None) -> tuple[int, ...]:
+        def same_as_input(
+            input_shapes: list[tuple[int, ...]], context: dict = None
+        ) -> tuple[int, ...]:
             """Output shape same as first input."""
             return input_shapes[0] if input_shapes else (4, 4)
 
-        def matmul_shape(input_shapes: list[tuple[int, ...]], context: dict = None) -> tuple[int, ...]:
+        def matmul_shape(
+            input_shapes: list[tuple[int, ...]], context: dict = None
+        ) -> tuple[int, ...]:
             """Matrix multiplication output shape."""
             if len(input_shapes) >= 2:
                 return (input_shapes[0][0], input_shapes[1][1])
@@ -165,28 +181,24 @@ class OperatorRegistry:
             operation_type=OpType.ELEMENTWISE,
             input_buffers=[
                 BufferSpec("lhs", dtype=torch.float32, shape_fn=same_as_input),
-                BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input)
+                BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input),
             ],
-            output_buffers=[
-                BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)
-            ],
+            output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
             code_template="{output}.at({index}) = {input0}.data.at({index}) + {input1}.data.at({index});",
-            fusable=True
+            fusable=True,
         )
-        
+
         mul_op = OperatorInfo(
             name="mul",
             canonical_name="mul",
             operation_type=OpType.ELEMENTWISE,
             input_buffers=[
                 BufferSpec("lhs", dtype=torch.float32, shape_fn=same_as_input),
-                BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input)
+                BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input),
             ],
-            output_buffers=[
-                BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)
-            ],
+            output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
             code_template="{output}.at({index}) = {input0}.data.at({index}) * {input1}.data.at({index});",
-            fusable=True
+            fusable=True,
         )
 
         sub_op = OperatorInfo(
@@ -195,13 +207,11 @@ class OperatorRegistry:
             operation_type=OpType.ELEMENTWISE,
             input_buffers=[
                 BufferSpec("lhs", dtype=torch.float32, shape_fn=same_as_input),
-                BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input)
+                BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input),
             ],
-            output_buffers=[
-                BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)
-            ],
+            output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
             code_template="{output}.at({index}) = {input0}.data.at({index}) - {input1}.data.at({index});",
-            fusable=True
+            fusable=True,
         )
 
         div_op = OperatorInfo(
@@ -210,44 +220,44 @@ class OperatorRegistry:
             operation_type=OpType.ELEMENTWISE,
             input_buffers=[
                 BufferSpec("lhs", dtype=torch.float32, shape_fn=same_as_input),
-                BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input)
+                BufferSpec("rhs", dtype=torch.float32, shape_fn=same_as_input),
             ],
-            output_buffers=[
-                BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)
-            ],
+            output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
             code_template="{output}.at({index}) = {input0}.data.at({index}) / {input1}.data.at({index});",
-            fusable=True
+            fusable=True,
         )
-        
+
         relu_op = OperatorInfo(
             name="relu",
             canonical_name="relu",
             operation_type=OpType.ACTIVATION,
-            input_buffers=[
-                BufferSpec("input", dtype=torch.float32, shape_fn=same_as_input)
-            ],
-            output_buffers=[
-                BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)
-            ],
+            input_buffers=[BufferSpec("input", dtype=torch.float32, shape_fn=same_as_input)],
+            output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=same_as_input)],
             code_template="{output}.at({index}) = {input0}.data.at({index}); // ReLU placeholder",
-            fusable=True
+            fusable=True,
         )
-        
+
         # Matrix operations
         matmul_op = OperatorInfo(
             name="matmul",
             canonical_name="matmul",
             operation_type=OpType.MATRIX,
             input_buffers=[
-                BufferSpec("lhs", dtype=torch.float32, shape_fn=lambda shapes, ctx: shapes[0] if shapes else (4, 4)),
-                BufferSpec("rhs", dtype=torch.float32, shape_fn=lambda shapes, ctx: shapes[1] if len(shapes) > 1 else (4, 4))
+                BufferSpec(
+                    "lhs",
+                    dtype=torch.float32,
+                    shape_fn=lambda shapes, ctx: shapes[0] if shapes else (4, 4),
+                ),
+                BufferSpec(
+                    "rhs",
+                    dtype=torch.float32,
+                    shape_fn=lambda shapes, ctx: shapes[1] if len(shapes) > 1 else (4, 4),
+                ),
             ],
-            output_buffers=[
-                BufferSpec("output", dtype=torch.float32, shape_fn=matmul_shape)
-            ],
+            output_buffers=[BufferSpec("output", dtype=torch.float32, shape_fn=matmul_shape)],
             code_template="// Matrix multiplication - requires device kernel",
             requires_device_kernel=True,
-            fusable=False
+            fusable=False,
         )
 
         # Reduction operations
@@ -255,14 +265,16 @@ class OperatorRegistry:
             name="sum",
             canonical_name="sum",
             operation_type=OpType.REDUCTION,
-            input_buffers=[
-                BufferSpec("input", dtype=torch.float32, shape_fn=same_as_input)
-            ],
+            input_buffers=[BufferSpec("input", dtype=torch.float32, shape_fn=same_as_input)],
             output_buffers=[
-                BufferSpec("output", dtype=torch.float32, shape_fn=lambda shapes, ctx: (1,) if shapes else (1,))
+                BufferSpec(
+                    "output",
+                    dtype=torch.float32,
+                    shape_fn=lambda shapes, ctx: (1,) if shapes else (1,),
+                )
             ],
             code_template="// Sum reduction - requires special handling",
-            fusable=False
+            fusable=False,
         )
 
         # Complex operations requiring device kernels
@@ -272,13 +284,11 @@ class OperatorRegistry:
             operation_type=OpType.COMPUTE_BOUND,
             input_buffers=[
                 BufferSpec("input", dtype=torch.float32),
-                BufferSpec("weight", dtype=torch.float32)
+                BufferSpec("weight", dtype=torch.float32),
             ],
-            output_buffers=[
-                BufferSpec("output", dtype=torch.float32)
-            ],
+            output_buffers=[BufferSpec("output", dtype=torch.float32)],
             requires_device_kernel=True,
-            fusable=False
+            fusable=False,
         )
 
         attention_op = OperatorInfo(
@@ -288,31 +298,39 @@ class OperatorRegistry:
             input_buffers=[
                 BufferSpec("query", dtype=torch.float32),
                 BufferSpec("key", dtype=torch.float32),
-                BufferSpec("value", dtype=torch.float32)
+                BufferSpec("value", dtype=torch.float32),
             ],
-            output_buffers=[
-                BufferSpec("output", dtype=torch.float32)
-            ],
+            output_buffers=[BufferSpec("output", dtype=torch.float32)],
             requires_device_kernel=True,
-            fusable=False
+            fusable=False,
         )
 
         # Register all operations
-        all_ops = [add_op, mul_op, sub_op, div_op, relu_op, matmul_op, sum_op, conv2d_op, attention_op]
-        
+        all_ops = [
+            add_op,
+            mul_op,
+            sub_op,
+            div_op,
+            relu_op,
+            matmul_op,
+            sum_op,
+            conv2d_op,
+            attention_op,
+        ]
+
         for op in all_ops:
             self._operators[op.name] = op
             self._function_mappings[op.name] = op
             self._method_mappings[op.name] = op
             # Also register in-place versions for methods
             self._method_mappings[f"{op.name}_"] = op
-            
+
             # Register aliases
             if op.name == "matmul":
                 for alias in ["mm", "bmm"]:
                     self._function_mappings[alias] = op
                     self._method_mappings[alias] = op
-    
+
     # Operation property methods
     def get_operation(self, name: str) -> Optional[OperatorInfo]:
         """Get complete operation information by name."""
@@ -326,8 +344,9 @@ class OperatorRegistry:
         """Get operation info for a method call."""
         return self._method_mappings.get(method_name)
 
-    def register_operation(self, op_info: OperatorInfo,
-                          for_functions: bool = True, for_methods: bool = True) -> None:
+    def register_operation(
+        self, op_info: OperatorInfo, for_functions: bool = True, for_methods: bool = True
+    ) -> None:
         """Register a custom operation."""
         self._operators[op_info.name] = op_info
         if for_functions:
@@ -335,52 +354,61 @@ class OperatorRegistry:
         if for_methods:
             self._method_mappings[op_info.name] = op_info
         logger.info(f"Registered unified operator: {op_info.name}")
-    
+
     # Template methods (backward compatibility)
     def get_operator(self, name: str) -> Optional[OperatorInfo]:
         """Get operator template by name (backward compatibility)."""
         return self.get_operation(name)
-    
+
     def list_operators(self) -> List[str]:
         """List all registered operator names."""
         return list(self._operators.keys())
-    
+
     def can_fuse(self, op1: str, op2: str) -> bool:
         """Check if two operators can be fused."""
         info1 = self.get_operation(op1)
         info2 = self.get_operation(op2)
-        
+
         if not info1 or not info2:
             return False
-        
-        return (info1.fusable and info2.fusable and
-                info1.operation_type in [OpType.ELEMENTWISE, OpType.ACTIVATION] and
-                info2.operation_type in [OpType.ELEMENTWISE, OpType.ACTIVATION])
-    
+
+        return (
+            info1.fusable
+            and info2.fusable
+            and info1.operation_type in [OpType.ELEMENTWISE, OpType.ACTIVATION]
+            and info2.operation_type in [OpType.ELEMENTWISE, OpType.ACTIVATION]
+        )
+
     # Utility methods
     def get_operations_by_type(self, op_type: OpType) -> Dict[str, OperatorInfo]:
         """Get all operations of a specific type."""
-        return {name: info for name, info in self._operators.items()
-                if info.operation_type == op_type}
-    
+        return {
+            name: info for name, info in self._operators.items() if info.operation_type == op_type
+        }
+
     def get_fusable_operations(self) -> Set[str]:
         """Get set of operations that can be fused."""
         return {name for name, info in self._operators.items() if info.fusable}
-    
+
     def get_elementwise_operations(self) -> Set[str]:
         """Get all elementwise operation names."""
-        return {name for name, info in self._operators.items() 
-                if info.operation_type == OpType.ELEMENTWISE}
-    
+        return {
+            name
+            for name, info in self._operators.items()
+            if info.operation_type == OpType.ELEMENTWISE
+        }
+
     def get_reduction_operations(self) -> Set[str]:
         """Get all reduction operation names."""
-        return {name for name, info in self._operators.items()
-                if info.operation_type == OpType.REDUCTION}
+        return {
+            name
+            for name, info in self._operators.items()
+            if info.operation_type == OpType.REDUCTION
+        }
 
     def get_device_kernel_operations(self) -> Set[str]:
         """Get all operations that require device kernels."""
-        return {name for name, info in self._operators.items()
-                if info.requires_device_kernel}
+        return {name for name, info in self._operators.items() if info.requires_device_kernel}
 
     def requires_device_kernel(self, op_name: str) -> bool:
         """Check if an operation requires a device kernel."""

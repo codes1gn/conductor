@@ -9,17 +9,15 @@ from .graph_analyzer import GraphAnalyzer, ComputationDAG
 from .graph_nodes import ConductorNode
 from .buffers import Buffer, BufferScope, BufferManager
 from .fusion import FusionEngine, FusionCluster, FusionType
-from .fusion_rules import get_fusion_rules
 
 __all__ = [
-    'GraphAnalyzer',
-    'ComputationDAG',
-    'ConductorNode',
-    'Buffer',
-    'BufferScope',
-    'BufferManager'
-    'FusionEngine',
-    'FusionCluster',
-    'FusionType',
-    'get_fusion_rules',
+    "GraphAnalyzer",
+    "ComputationDAG",
+    "ConductorNode",
+    "Buffer",
+    "BufferScope",
+    "BufferManager",
+    "FusionEngine",
+    "FusionCluster",
+    "FusionType",
 ]

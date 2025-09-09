@@ -6,7 +6,7 @@ Provides minimal backend registration functionality without over-engineering.
 
 import torch
 from typing import Callable
-from ..config.logging import get_logger
+from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -30,7 +30,7 @@ def register_backend(name: str, compiler_fn: Callable) -> bool:
         return True
 
     try:
-        if hasattr(torch._dynamo, 'register_backend'):
+        if hasattr(torch._dynamo, "register_backend"):
             torch._dynamo.register_backend(name=name, compiler_fn=compiler_fn)
             _registered_backends.add(name)
             logger.info(f"Successfully registered '{name}' backend for torch.compile")
@@ -46,4 +46,3 @@ def register_backend(name: str, compiler_fn: Callable) -> bool:
 def is_backend_registered(name: str) -> bool:
     """Check if a backend is registered."""
     return name in _registered_backends
-

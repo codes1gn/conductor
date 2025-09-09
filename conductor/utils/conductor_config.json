@@ -3,13 +3,13 @@
   "description": "Conductor Framework Configuration",
   
   "debug": {
-    "enabled": false,
+    "enabled": true,
     "max_tensor_elements": 100,
     "indent_size": 2
   },
   
   "cache": {
-    "enabled": true,
+    "enabled": false,
     "max_size_mb": 1024,
     "cache_dir": null
   },
@@ -17,7 +17,7 @@
   "compilation": {
     "timeout_seconds": 300,
     "optimization_level": "O2",
-    "enable_fusion": true
+    "enable_fusion": false 
   },
   
   "runtime": {

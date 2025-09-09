@@ -1,0 +1,33 @@
+[flake8]
+max-line-length = 100
+
+# 忽略以下规则：
+# - E203: whitespace before ':'
+# - W503: line break before binary operator
+# - E501: line too long (由 black 处理)
+# - F401: imported but unused (单独处理)
+# - W292: no newline at end of file
+# - W293: blank line contains whitespace
+# - E302: expected 2 blank lines
+# - E305: expected 2 blank lines after class or function definition
+ignore = E203, W503, E501, F401, W292, W293, E302, E305
+
+exclude =
+    __pycache__,
+    *.pyc,
+    .git,
+    build,
+    dist,
+    .venv,
+    venv,
+    .tox,
+    .mypy_cache,
+    debug_dir,
+    choreo-headers,
+    choreo-op
+
+# 针对特定文件的例外规则
+per-file-ignores =
+    __init__.py:F401
+    */config/*.py:E501
+

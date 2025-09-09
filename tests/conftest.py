@@ -28,10 +28,10 @@ from conductor.compiler.loader import CompiledArtifact, ExecutableKernel
 def test_config():
     """Global test configuration."""
     return {
-        'temp_dir': None,
-        'mock_conductor_cli': True,
-        'enable_performance_tests': False,
-        'enable_hardware_tests': False,
+        "temp_dir": None,
+        "mock_conductor_cli": True,
+        "enable_performance_tests": False,
+        "enable_hardware_tests": False,
     }
 
 
@@ -39,7 +39,7 @@ def test_config():
 def temp_test_dir(test_config):
     """Create temporary directory for test artifacts."""
     temp_dir = tempfile.mkdtemp(prefix="conductor_test_")
-    test_config['temp_dir'] = temp_dir
+    test_config["temp_dir"] = temp_dir
     yield temp_dir
     shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -48,12 +48,7 @@ def temp_test_dir(test_config):
 @pytest.fixture
 def sample_buffer():
     """Create a sample buffer for testing."""
-    return Buffer(
-        name="test_buffer",
-        scope=BufferScope.LOCAL,
-        dtype=torch.float32,
-        shape=(10, 10)
-    )
+    return Buffer(name="test_buffer", scope=BufferScope.LOCAL, dtype=torch.float32, shape=(10, 10))
 
 
 @pytest.fixture
@@ -66,11 +61,11 @@ def buffer_manager():
 def sample_buffers():
     """Create a set of sample buffers with different properties."""
     return {
-        'input': Buffer("input", BufferScope.GLOBAL, torch.float32, (32, 128)),
-        'temp1': Buffer("temp1", BufferScope.LOCAL, torch.float32, (32, 128)),
-        'temp2': Buffer("temp2", BufferScope.LOCAL, torch.float32, (32, 128)),
-        'output': Buffer("output", BufferScope.GLOBAL, torch.float32, (32, 128)),
-        'shared': Buffer("shared", BufferScope.SHARED, torch.float32, (32, 128)),
+        "input": Buffer("input", BufferScope.GLOBAL, torch.float32, (32, 128)),
+        "temp1": Buffer("temp1", BufferScope.LOCAL, torch.float32, (32, 128)),
+        "temp2": Buffer("temp2", BufferScope.LOCAL, torch.float32, (32, 128)),
+        "output": Buffer("output", BufferScope.GLOBAL, torch.float32, (32, 128)),
+        "shared": Buffer("shared", BufferScope.SHARED, torch.float32, (32, 128)),
     }
 
 
@@ -79,9 +74,7 @@ def sample_buffers():
 def sample_node(sample_buffers):
     """Create a sample ConductorNode for testing."""
     return ConductorNode(
-        op_name="relu",
-        inputs=[sample_buffers['input']],
-        outputs=[sample_buffers['output']]
+        op_name="relu", inputs=[sample_buffers["input"]], outputs=[sample_buffers["output"]]
     )
 
 
@@ -89,17 +82,17 @@ def sample_node(sample_buffers):
 def elementwise_chain_nodes(sample_buffers):
     """Create a chain of elementwise nodes for fusion testing."""
     nodes = [
-        ConductorNode("add", inputs=[sample_buffers['input']], outputs=[sample_buffers['temp1']]),
-        ConductorNode("mul", inputs=[sample_buffers['temp1']], outputs=[sample_buffers['temp2']]),
-        ConductorNode("relu", inputs=[sample_buffers['temp2']], outputs=[sample_buffers['output']])
+        ConductorNode("add", inputs=[sample_buffers["input"]], outputs=[sample_buffers["temp1"]]),
+        ConductorNode("mul", inputs=[sample_buffers["temp1"]], outputs=[sample_buffers["temp2"]]),
+        ConductorNode("relu", inputs=[sample_buffers["temp2"]], outputs=[sample_buffers["output"]]),
     ]
-    
+
     # Set up buffer relationships
-    sample_buffers['temp1'].producer = nodes[0]
-    sample_buffers['temp1'].consumers = [nodes[1]]
-    sample_buffers['temp2'].producer = nodes[1]
-    sample_buffers['temp2'].consumers = [nodes[2]]
-    
+    sample_buffers["temp1"].producer = nodes[0]
+    sample_buffers["temp1"].consumers = [nodes[1]]
+    sample_buffers["temp2"].producer = nodes[1]
+    sample_buffers["temp2"].consumers = [nodes[2]]
+
     return nodes
 
 
@@ -108,19 +101,19 @@ def elementwise_chain_nodes(sample_buffers):
 def sample_dag(elementwise_chain_nodes, sample_buffers):
     """Create a sample ComputationDAG for testing."""
     dag = ComputationDAG()
-    
+
     # Add nodes
     for node in elementwise_chain_nodes:
         dag.add_node(node)
-    
+
     # Add buffers
     for buffer in sample_buffers.values():
         dag.add_buffer(buffer)
-    
+
     # Set inputs and outputs
-    dag.inputs = [sample_buffers['input']]
-    dag.outputs = [sample_buffers['output']]
-    
+    dag.inputs = [sample_buffers["input"]]
+    dag.outputs = [sample_buffers["output"]]
+
     return dag
 
 
@@ -128,18 +121,18 @@ def sample_dag(elementwise_chain_nodes, sample_buffers):
 def simple_dag():
     """Create a simple DAG with one operation for basic testing."""
     dag = ComputationDAG()
-    
+
     input_buf = Buffer("input", BufferScope.GLOBAL, torch.float32, (10, 10))
     output_buf = Buffer("output", BufferScope.GLOBAL, torch.float32, (10, 10))
-    
+
     relu_node = ConductorNode("relu", inputs=[input_buf], outputs=[output_buf])
-    
+
     dag.add_node(relu_node)
     dag.add_buffer(input_buf)
     dag.add_buffer(output_buf)
     dag.inputs = [input_buf]
     dag.outputs = [output_buf]
-    
+
     return dag
 
 
@@ -153,7 +146,7 @@ def sample_fusion_cluster(elementwise_chain_nodes):
         external_inputs=[elementwise_chain_nodes[0].inputs[0]],
         external_outputs=[elementwise_chain_nodes[1].outputs[0]],
         internal_buffers=[elementwise_chain_nodes[0].outputs[0]],
-        dsl_function_name="fused_add_mul"
+        dsl_function_name="fused_add_mul",
     )
 
 
@@ -180,6 +173,7 @@ def dsl_generator():
 def jit_compiler(temp_test_dir):
     """Create a JITCompiler instance with temporary cache directory."""
     from conductor.choreo_jit import JITCompiler
+
     return JITCompiler(cache_dir=temp_test_dir)
 
 
@@ -193,64 +187,68 @@ def aot_manager():
 @pytest.fixture
 def simple_torch_model():
     """Create a simple PyTorch model for testing."""
+
     class SimpleModel(torch.nn.Module):
         def forward(self, x):
             return torch.relu(x)
-    
+
     return SimpleModel()
 
 
 @pytest.fixture
 def elementwise_torch_model():
     """Create a PyTorch model with elementwise operations."""
+
     class ElementwiseModel(torch.nn.Module):
         def forward(self, x):
             y = x + 1.0
             z = y * 2.0
             return torch.relu(z)
-    
+
     return ElementwiseModel()
 
 
 @pytest.fixture
 def linear_torch_model():
     """Create a PyTorch model with linear layer."""
+
     class LinearModel(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.linear = torch.nn.Linear(10, 20)
-            
+
         def forward(self, x):
             return self.linear(x)
-    
+
     return LinearModel()
 
 
 @pytest.fixture
 def complex_torch_model():
     """Create a more complex PyTorch model for integration testing."""
+
     class ComplexModel(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.linear1 = torch.nn.Linear(128, 256)
             self.linear2 = torch.nn.Linear(256, 128)
-            
+
         def forward(self, x):
             # Elementwise operations
             y = x + 1.0
             z = torch.relu(y)
-            
+
             # Linear transformations
             h1 = self.linear1(z)
             h2 = torch.relu(h1)
-            
+
             # More elementwise
             h3 = h2 * 0.5
             output = self.linear2(h3)
-            
+
             # Reduction
             return torch.sum(output, dim=-1)
-    
+
     return ComplexModel()
 
 
@@ -277,12 +275,8 @@ def complex_fx_graph(complex_torch_model):
 @pytest.fixture
 def mock_conductor_cli():
     """Mock the Conductor CLI compiler."""
-    with patch('conductor.runtime.jit.subprocess.run') as mock_run:
-        mock_run.return_value = Mock(
-            returncode=0,
-            stdout="Compilation successful",
-            stderr=""
-        )
+    with patch("conductor.runtime.jit.subprocess.run") as mock_run:
+        mock_run.return_value = Mock(returncode=0, stdout="Compilation successful", stderr="")
         yield mock_run
 
 
@@ -299,16 +293,12 @@ def mock_compiled_artifact(temp_test_dir):
     """Mock CompiledArtifact for testing."""
     artifact_path = Path(temp_test_dir) / "test_artifact.so"
     artifact_path.touch()  # Create empty file
-    
+
     return CompiledArtifact(
         path=str(artifact_path),
         artifact_type="shared_library",
         entry_point="main",
-        metadata={
-            "graph_hash": "test_hash_123",
-            "node_count": 3,
-            "fusion_clusters": 1
-        }
+        metadata={"graph_hash": "test_hash_123", "node_count": 3, "fusion_clusters": 1},
     )
 
 
@@ -317,12 +307,12 @@ def mock_compiled_artifact(temp_test_dir):
 def sample_tensor_data():
     """Create sample tensor data for testing."""
     return {
-        'small': torch.randn(4, 4),
-        'medium': torch.randn(32, 128),
-        'large': torch.randn(256, 512),
-        'batch': torch.randn(16, 32, 64),
-        'int_tensor': torch.randint(0, 100, (10, 10)),
-        'bool_tensor': torch.randint(0, 2, (5, 5)).bool(),
+        "small": torch.randn(4, 4),
+        "medium": torch.randn(32, 128),
+        "large": torch.randn(256, 512),
+        "batch": torch.randn(16, 32, 64),
+        "int_tensor": torch.randint(0, 100, (10, 10)),
+        "bool_tensor": torch.randint(0, 2, (5, 5)).bool(),
     }
 
 
@@ -331,10 +321,10 @@ def sample_tensor_data():
 def performance_config():
     """Configuration for performance tests."""
     return {
-        'warmup_runs': 3,
-        'benchmark_runs': 10,
-        'timeout_seconds': 30,
-        'memory_limit_mb': 1024,
+        "warmup_runs": 3,
+        "benchmark_runs": 10,
+        "timeout_seconds": 30,
+        "memory_limit_mb": 1024,
     }
 
 
@@ -342,67 +332,74 @@ def performance_config():
 def create_test_model(operations: List[str], input_shape: tuple = (10, 10)):
     """
     Create a test model with specified operations.
-    
+
     Args:
         operations: List of operation names to chain together
         input_shape: Shape of input tensor
-        
+
     Returns:
         torch.nn.Module: Test model
     """
+
     class TestModel(torch.nn.Module):
         def __init__(self, ops):
             super().__init__()
             self.ops = ops
-            
+
         def forward(self, x):
             result = x
             for op in self.ops:
-                if op == 'add':
+                if op == "add":
                     result = result + 1.0
-                elif op == 'mul':
+                elif op == "mul":
                     result = result * 2.0
-                elif op == 'relu':
+                elif op == "relu":
                     result = torch.relu(result)
-                elif op == 'sigmoid':
+                elif op == "sigmoid":
                     result = torch.sigmoid(result)
-                elif op == 'sum':
+                elif op == "sum":
                     result = torch.sum(result, dim=-1)
-                elif op == 'mean':
+                elif op == "mean":
                     result = torch.mean(result, dim=-1)
                 else:
                     raise ValueError(f"Unknown operation: {op}")
             return result
-    
+
     return TestModel(operations)
 
 
 def assert_dsl_contains_pattern(dsl_code: str, pattern: str, description: str = ""):
     """
     Assert that DSL code contains a specific pattern.
-    
+
     Args:
         dsl_code: Generated DSL code
         pattern: Regex pattern to match
         description: Description of what the pattern checks
     """
     import re
+
     if not re.search(pattern, dsl_code):
-        pytest.fail(f"DSL pattern check failed: {description}\nPattern: {pattern}\nDSL:\n{dsl_code}")
+        pytest.fail(
+            f"DSL pattern check failed: {description}\nPattern: {pattern}\nDSL:\n{dsl_code}"
+        )
 
 
 def assert_dsl_not_contains_pattern(dsl_code: str, pattern: str, description: str = ""):
     """
     Assert that DSL code does NOT contain a specific pattern.
-    
+
     Args:
         dsl_code: Generated DSL code
         pattern: Regex pattern that should not match
         description: Description of what the pattern checks
     """
     import re
+
     if re.search(pattern, dsl_code):
-        pytest.fail(f"DSL negative pattern check failed: {description}\nPattern: {pattern}\nDSL:\n{dsl_code}")
+        pytest.fail(
+            f"DSL negative pattern check failed: {description}\nPattern: {pattern}\nDSL:\n{dsl_code}"
+        )
 
 
 # Pytest hooks for test collection and reporting
@@ -418,12 +415,12 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.filecheck)
         elif "performance" in str(item.fspath):
             item.add_marker(pytest.mark.performance)
-        
+
         # Skip tests that require external dependencies
         if "requires_conductor" in item.keywords:
             if not shutil.which("conductor"):
                 item.add_marker(pytest.mark.skip(reason="Conductor CLI not available"))
-        
+
         if "requires_gcu" in item.keywords:
             # Skip GCU tests if hardware not available
             item.add_marker(pytest.mark.skip(reason="GCU hardware not available"))
@@ -431,27 +428,15 @@ def pytest_collection_modifyitems(config, items):
 
 def pytest_configure(config):
     """Configure pytest with custom markers."""
-    config.addinivalue_line(
-        "markers", "unit: Unit tests for individual components"
-    )
-    config.addinivalue_line(
-        "markers", "integration: Integration tests for complete workflows"
-    )
-    config.addinivalue_line(
-        "markers", "filecheck: FileCheck-style DSL validation tests"
-    )
-    config.addinivalue_line(
-        "markers", "performance: Performance and benchmarking tests"
-    )
-    config.addinivalue_line(
-        "markers", "slow: Tests that take a long time to run"
-    )
+    config.addinivalue_line("markers", "unit: Unit tests for individual components")
+    config.addinivalue_line("markers", "integration: Integration tests for complete workflows")
+    config.addinivalue_line("markers", "filecheck: FileCheck-style DSL validation tests")
+    config.addinivalue_line("markers", "performance: Performance and benchmarking tests")
+    config.addinivalue_line("markers", "slow: Tests that take a long time to run")
     config.addinivalue_line(
         "markers", "requires_conductor: Tests that require Conductor CLI compiler"
     )
-    config.addinivalue_line(
-        "markers", "requires_gcu: Tests that require GCU hardware"
-    )
+    config.addinivalue_line("markers", "requires_gcu: Tests that require GCU hardware")
 
 
 # Test result collection for coverage reporting

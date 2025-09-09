@@ -20,12 +20,13 @@ class ConductorNode:
     This is the internal representation of operations that will be
     compiled to Choreo DSL.
     """
+
     op_name: str
     inputs: list[Any] = field(default_factory=list)  # Can be Buffer objects or strings
     outputs: list[Any] = field(default_factory=list)  # Can be Buffer objects or strings
     metadata: dict[str, Any] = field(default_factory=dict)
     fusion_group: Optional[Any] = None  # Fusion cluster membership
-    
+
     def __post_init__(self):
         """Post-initialization processing."""
         if not self.inputs:
@@ -34,25 +35,25 @@ class ConductorNode:
             self.outputs = []
         if not self.metadata:
             self.metadata = {}
-    
+
     def add_input(self, input_name: str) -> None:
         """Add an input to this node."""
         if input_name not in self.inputs:
             self.inputs.append(input_name)
-    
+
     def add_output(self, output_name: str) -> None:
         """Add an output to this node."""
         if output_name not in self.outputs:
             self.outputs.append(output_name)
-    
+
     def set_metadata(self, key: str, value: Any) -> None:
         """Set metadata for this node."""
         self.metadata[key] = value
-    
+
     def get_metadata(self, key: str, default: Any = None) -> Any:
         """Get metadata for this node."""
         return self.metadata.get(key, default)
-    
+
     def is_elementwise(self) -> bool:
         """Check if this operation is elementwise."""
         return is_elementwise(self.op_name)

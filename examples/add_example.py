@@ -60,7 +60,7 @@ def verify_correctness(cpu_output, gcu_output, tolerance=1e-5):
 
 def show_debug_artifacts():
     """Show generated debug artifacts."""
-    debug_dir = os.path.join(os.path.dirname(__file__), '..', 'debug_dir')
+    debug_dir = os.path.join(os.path.dirname(__file__), "..", "debug_dir")
     if os.path.exists(debug_dir):
         files = [f for f in os.listdir(debug_dir) if os.path.isfile(os.path.join(debug_dir, f))]
         print(f"Debug artifacts: {len(files)} files in {debug_dir}")
@@ -93,7 +93,9 @@ def main():
 
         # Verify correctness
         is_correct, max_diff = verify_correctness(cpu_output, gcu_output)
-        print(f"Numerical accuracy: {'✅ PASS' if is_correct else '❌ FAIL'} (max diff: {max_diff:.2e})")
+        print(
+            f"Numerical accuracy: {'✅ PASS' if is_correct else '❌ FAIL'} (max diff: {max_diff:.2e})"
+        )
 
         # Performance summary
         speedup = cpu_time / gcu_time if gcu_time > 0 else 0

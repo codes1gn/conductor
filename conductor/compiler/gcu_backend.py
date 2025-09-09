@@ -12,8 +12,8 @@ import hashlib
 from .jit_compiler import ChoreoJITCompiler
 from .callable import Callable as GCUCallable
 from .backend_registry import register_backend
-from ..config.debug_tracer import get_debug_tracer, trace_fx_graph
-from ..config.logging import get_logger
+from ..utils.trace import get_debug_tracer, trace_fx_graph
+from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -25,7 +25,9 @@ class GCUBackend:
         self.jit_compiler = ChoreoJITCompiler()
         self._compiled_functions = {}
 
-    def __call__(self, graph_module: fx.GraphModule, example_inputs: List[torch.Tensor]) -> TypingCallable:
+    def __call__(
+        self, graph_module: fx.GraphModule, example_inputs: List[torch.Tensor]
+    ) -> TypingCallable:
         """
         Compile FX graph for GCU execution.
 
@@ -65,7 +67,9 @@ class GCUBackend:
             logger.info("Falling back to PyTorch eager execution")
             return graph_module.forward
 
-    def _compute_graph_hash(self, graph_module: fx.GraphModule, example_inputs: Optional[List[torch.Tensor]] = None) -> str:
+    def _compute_graph_hash(
+        self, graph_module: fx.GraphModule, example_inputs: Optional[List[torch.Tensor]] = None
+    ) -> str:
         """Compute hash for graph caching."""
         graph_str = str(graph_module.graph)
         if example_inputs:
@@ -90,4 +94,3 @@ def register_gcu_backend() -> bool:
     """Register the GCU backend with PyTorch."""
     backend = get_gcu_backend()
     return register_backend("gcu", backend)
-
