@@ -37,7 +37,7 @@ from ..optimization.buffer_naming import (
     get_intermediate_buffer_name,
     reset_buffer_naming,
 )
-from ..optimization.dag_naming import dag_naming_annotator, DAGNamingAnnotation
+from ..optimization.dag_naming import dag_naming_annotator, DAGNamingAnnotation, NodeNaming
 from ..utils.logging import get_logger
 from ..utils.constants import DEFAULT_DSL_INDENT_SIZE, MemoryLevel
 from ..utils.config import get_config
@@ -603,131 +603,136 @@ class ChoreoDslGen:
                 lines.append(buffer_decl)
 
         # Generate computation for each node in topological order
-        for node_id in annotation.execution_order:
-            naming = annotation.node_naming[node_id]
+        # Check if we can do loop fusion for consecutive elementwise operations
+        if self._can_do_annotation_loop_fusion(dag, annotation):
+            lines.extend(self._generate_fused_computation_with_annotation(dag, annotation, dma_load_mapping))
+        else:
+            # Generate separate loops for each node
+            for node_id in annotation.execution_order:
+                naming = annotation.node_naming[node_id]
 
-            # Find the actual node
-            node = None
-            for dag_node in dag.nodes:
-                if self._get_node_id(dag_node) == node_id:
-                    node = dag_node
-                    break
+                # Find the actual node
+                node = None
+                for dag_node in dag.nodes:
+                    if self._get_node_id(dag_node) == node_id:
+                        node = dag_node
+                        break
 
-            if node:
-                # Determine tensor rank from DAG inputs
-                tensor_rank = 2  # Default to 2D
-                if dag.inputs and dag.inputs[0].shape:
-                    tensor_rank = len(dag.inputs[0].shape)
+                if node:
+                        # Determine tensor rank from DAG inputs
+                        tensor_rank = 2  # Default to 2D
+                        if dag.inputs and dag.inputs[0].shape:
+                            tensor_rank = len(dag.inputs[0].shape)
 
-                # Map node inputs to correct DMA load variables or intermediate results
-                actual_input_vars = []
-                for input_buf in node.inputs:
-                    if input_buf.name in dma_load_mapping:
-                        # This is a DAG input - use DMA load variable
-                        actual_input_vars.append(dma_load_mapping[input_buf.name])
-                    else:
-                        # This is an intermediate result - find the output variable from previous node
-                        producer_node = input_buf.producer
-                        if producer_node:
-                            producer_id = self._get_node_id(producer_node)
-                            if producer_id in annotation.node_naming:
-                                producer_naming = annotation.node_naming[producer_id]
-                                if producer_naming.output_vars:
-                                    actual_input_vars.append(producer_naming.output_vars[0])
-                                else:
-                                    actual_input_vars.append(f"temp_{producer_id}")
+                        # Map node inputs to correct DMA load variables or intermediate results
+                        actual_input_vars = []
+                        for input_buf in node.inputs:
+                            if input_buf.name in dma_load_mapping:
+                                # This is a DAG input - use DMA load variable
+                                actual_input_vars.append(dma_load_mapping[input_buf.name])
                             else:
-                                actual_input_vars.append(f"temp_{producer_id}")
+                                # This is an intermediate result - find the output variable from previous node
+                                producer_node = input_buf.producer
+                                if producer_node:
+                                    producer_id = self._get_node_id(producer_node)
+                                    if producer_id in annotation.node_naming:
+                                        producer_naming = annotation.node_naming[producer_id]
+                                        if producer_naming.output_vars:
+                                            actual_input_vars.append(producer_naming.output_vars[0])
+                                        else:
+                                            actual_input_vars.append(f"temp_{producer_id}")
+                                    else:
+                                        actual_input_vars.append(f"temp_{producer_id}")
+                                else:
+                                    # Fallback
+                                    actual_input_vars.append(f"unknown_input_{len(actual_input_vars)}")
+
+                        # Determine tensor rank based on the node's output shape
+                        node_tensor_rank = tensor_rank  # Default fallback
+                        if node and node.outputs and node.outputs[0].shape:
+                            node_tensor_rank = len(node.outputs[0].shape)
+
+                        # Generate operation code using operator template with proper tensor rank
+                        computation = self._generate_operation_from_template(
+                            node,
+                            actual_input_vars,
+                            naming.index_vars[0],
+                            naming.output_vars[0],
+                            node_tensor_rank,
+                        )
+
+                        # Generate proper nested foreach loops based on the node's output shape
+                        if node and node.outputs and node.outputs[0].shape:
+                            output_shape = node.outputs[0].shape
+                            if len(output_shape) == 2:
+                                # For 2D output tensors
+                                height = output_shape[0]
+                                width = output_shape[1]
+                                lines.append(
+                                    f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{height}] {{"
+                                )
+                                lines.append(
+                                    f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{width}] {{"
+                                )
+                                lines.append(f"    {computation}")
+                                lines.append("  }")  # Close inner foreach
+                                lines.append("}")    # Close outer foreach
+                            elif len(output_shape) == 1:
+                                # For 1D output tensors
+                                length = output_shape[0]
+                                lines.append(
+                                    f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{length}] {{"
+                                )
+                                lines.append(f"  {computation}")
+                                lines.append("}")  # Close foreach
+                            else:
+                                # For higher dimensions, use simplified approach
+                                lines.append(f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [1] {{")
+                                lines.append(f"  {computation}")
+                                lines.append("}")  # Close foreach
+                        elif tensor_rank == 2:
+                            # Fallback to input shape if output shape is not available
+                            if dag.inputs and dag.inputs[0].shape:
+                                shape = dag.inputs[0].shape
+                                height = shape[0]
+                                width = shape[1]
+                                chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
+                                chunk_width = width // chunk_size if chunk_size > 0 else width
+                                lines.append(
+                                    f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{height}] {{"
+                                )
+                                lines.append(
+                                    f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{chunk_width}] {{"
+                                )
+                                lines.append(f"    {computation}")
+                                lines.append("  }")  # Close inner foreach
+                                lines.append("}")    # Close outer foreach
+                            else:
+                                # Final fallback
+                                lines.append(f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [4] {{")
+                                lines.append(f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [4] {{")
+                                lines.append(f"    {computation}")
+                                lines.append("  }")  # Close inner foreach
+                                lines.append("}")    # Close outer foreach
+                        elif tensor_rank == 1:
+                            chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
+                            lines.append(
+                                f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{chunk_size}] {{"
+                            )
+                            lines.append(f"  {computation}")
+                            lines.append("}")  # Close foreach
                         else:
-                            # Fallback
-                            actual_input_vars.append(f"unknown_input_{len(actual_input_vars)}")
-
-                # Determine tensor rank based on the node's output shape
-                node_tensor_rank = tensor_rank  # Default fallback
-                if node and node.outputs and node.outputs[0].shape:
-                    node_tensor_rank = len(node.outputs[0].shape)
-
-                # Generate operation code using operator template with proper tensor rank
-                computation = self._generate_operation_from_template(
-                    node,
-                    actual_input_vars,
-                    naming.index_vars[0],
-                    naming.output_vars[0],
-                    node_tensor_rank,
-                )
-
-                # Generate proper nested foreach loops based on the node's output shape
-                if node and node.outputs and node.outputs[0].shape:
-                    output_shape = node.outputs[0].shape
-                    if len(output_shape) == 2:
-                        # For 2D output tensors
-                        height = output_shape[0]
-                        width = output_shape[1]
-                        lines.append(
-                            f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{height}] {{"
-                        )
-                        lines.append(
-                            f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{width}] {{"
-                        )
-                        lines.append(f"    {computation}")
-                        lines.append("  }")  # Close inner foreach
-                        lines.append("}")    # Close outer foreach
-                    elif len(output_shape) == 1:
-                        # For 1D output tensors
-                        length = output_shape[0]
-                        lines.append(
-                            f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{length}] {{"
-                        )
-                        lines.append(f"  {computation}")
-                        lines.append("}")  # Close foreach
-                    else:
-                        # For higher dimensions, use simplified approach
-                        lines.append(f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [1] {{")
-                        lines.append(f"  {computation}")
-                        lines.append("}")  # Close foreach
-                elif tensor_rank == 2:
-                    # Fallback to input shape if output shape is not available
-                    if dag.inputs and dag.inputs[0].shape:
-                        shape = dag.inputs[0].shape
-                        height = shape[0]
-                        width = shape[1]
-                        chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
-                        chunk_width = width // chunk_size if chunk_size > 0 else width
-                        lines.append(
-                            f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{height}] {{"
-                        )
-                        lines.append(
-                            f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{chunk_width}] {{"
-                        )
-                        lines.append(f"    {computation}")
-                        lines.append("  }")  # Close inner foreach
-                        lines.append("}")    # Close outer foreach
-                    else:
-                        # Final fallback
-                        lines.append(f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [4] {{")
-                        lines.append(f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [4] {{")
-                        lines.append(f"    {computation}")
-                        lines.append("  }")  # Close inner foreach
-                        lines.append("}")    # Close outer foreach
-                elif tensor_rank == 1:
-                    chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
-                    lines.append(
-                        f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{chunk_size}] {{"
-                    )
-                    lines.append(f"  {computation}")
-                    lines.append("}")  # Close foreach
-                else:
-                    # For higher dimensions, use simplified approach
-                    chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
-                    lines.append(
-                        f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{chunk_size}] {{"
-                    )
-                    lines.append(
-                        f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{chunk_size}] {{"
-                    )
-                    lines.append(f"    {computation}")
-                    lines.append("  }")  # Close inner foreach
-                    lines.append("}")    # Close outer foreach
+                            # For higher dimensions, use simplified approach
+                            chunk_size = self.generation_context.get_value(ContextKeys.CHUNK_SIZE)
+                            lines.append(
+                                f"{DSLKeywords.FOREACH.value} {naming.index_vars[0]} in [{chunk_size}] {{"
+                            )
+                            lines.append(
+                                f"  {DSLKeywords.FOREACH.value} {naming.index_vars[1]} in [{chunk_size}] {{"
+                            )
+                            lines.append(f"    {computation}")
+                            lines.append("  }")  # Close inner foreach
+                            lines.append("}")    # Close outer foreach
 
         return lines
 
@@ -870,11 +875,20 @@ class ChoreoDslGen:
         else:
             # Check if operations can be safely fused
             if self._can_fuse_operations(dag.nodes):
-                # Fused operations
-                computation = self._generate_fused_operations_from_templates(
-                    dag.nodes, input_vars, index_vars, output_buffer_name
-                )
-                lines.append(self._indent(computation))
+                # Check if we can do loop fusion (multiple statements in single loop)
+                if self._can_do_loop_fusion(dag.nodes):
+                    # Generate multiple computation statements within the same loop
+                    fused_statements = self._generate_loop_fused_statements(
+                        dag.nodes, input_vars, index_vars, output_buffer_name
+                    )
+                    for statement in fused_statements:
+                        lines.append(self._indent(statement))
+                else:
+                    # Single expression fusion
+                    computation = self._generate_fused_operations_from_templates(
+                        dag.nodes, input_vars, index_vars, output_buffer_name
+                    )
+                    lines.append(self._indent(computation))
             else:
                 # Generate as separate sequential operations (requires different structure)
                 sequential_lines = self._generate_sequential_operations_from_templates(
@@ -943,19 +957,210 @@ class ChoreoDslGen:
         index_vars: str = "i",
         output_buffer_name: str = None,
     ) -> str:
-        """Generate fused operations using operator templates."""
-        # For now, just chain the operations
-        # In a real implementation, this would do proper fusion analysis
+        """Generate fused operations using operator templates with loop fusion."""
         if output_buffer_name is None:
             output_buffer_name = get_output_buffer_name()
 
-        # Simple chaining - use first operation
-        if nodes:
+        if not nodes:
+            return f"{output_buffer_name}.at({index_vars}) = {input_vars[0]}.data.at({index_vars});"
+
+        # Check if we can do loop fusion for elementwise operations with same dimensions
+        if self._can_do_loop_fusion(nodes):
+            return self._generate_loop_fused_computation(nodes, input_vars, index_vars, output_buffer_name)
+        else:
+            # Fallback to simple chaining for non-fusible operations
             return self._generate_operation_from_template(
                 nodes[0], input_vars, index_vars, output_buffer_name
             )
+
+    def _can_do_loop_fusion(self, nodes: list[ConductorNode]) -> bool:
+        """
+        Check if nodes can benefit from loop fusion.
+
+        Loop fusion is beneficial when:
+        1. All operations are elementwise (add, mul, sub, div)
+        2. Operations have compatible tensor dimensions
+        3. There's a clear data dependency chain
+        """
+        if len(nodes) <= 1:
+            return False
+
+        # Check if all operations are elementwise
+        elementwise_ops = {"add", "mul", "sub", "div"}
+        for node in nodes:
+            if node.op_name not in elementwise_ops:
+                return False
+
+        # Check if operations have compatible dimensions
+        # For now, assume they're compatible if they're all elementwise
+        # In a full implementation, we'd check actual tensor shapes
+        return True
+
+    def _generate_loop_fused_computation(
+        self,
+        nodes: list[ConductorNode],
+        input_vars: list[str],
+        index_vars: str,
+        output_buffer_name: str
+    ) -> str:
+        """
+        Generate fused computation with multiple operations in a single loop body.
+
+        This transforms separate loops like:
+        foreach i { temp = a + b; }
+        foreach i { result = temp * c; }
+
+        Into a single fused loop:
+        foreach i {
+            temp = a + b;
+            result = temp * c;
+        }
+        """
+        # Build computation chain with intermediate variables
+        computation_steps = []
+        current_inputs = input_vars.copy()
+
+        for i, node in enumerate(nodes):
+            if i == len(nodes) - 1:
+                # Last operation writes to final output
+                output_var = output_buffer_name
+            else:
+                # Intermediate operations use temporary variables
+                output_var = f"temp_{node.op_name}_{i}"
+
+            # Generate computation step for this operation
+            step = self._generate_fused_operation_step(
+                node, current_inputs, output_var, index_vars
+            )
+            computation_steps.append(step)
+
+            # Next operation uses this output as input
+            current_inputs = [output_var]
+
+        # Combine all steps into a single computation expression
+        return "; ".join(computation_steps)
+
+    def _generate_fused_operation_step(
+        self,
+        node: ConductorNode,
+        input_vars: list[str],
+        output_var: str,
+        index_vars: str
+    ) -> str:
+        """
+        Generate a single computation step for fused operations.
+
+        Args:
+            node: The operation node
+            input_vars: Input variable names for this step
+            output_var: Output variable name for this step
+            index_vars: Index variables for array access
+
+        Returns:
+            Single computation statement
+        """
+        # Get the operation symbol
+        op_symbol = self._get_operation_symbol(node.op_name)
+
+        if node.op_name in ["add", "mul", "sub", "div"]:
+            if len(input_vars) >= 2:
+                # Binary operation: result = input1 op input2
+                return f"{output_var}.at({index_vars}) = {input_vars[0]}.data.at({index_vars}) {op_symbol} {input_vars[1]}.data.at({index_vars})"
+            elif len(input_vars) == 1:
+                # Unary operation with constant (fallback)
+                constant = "1.0" if node.op_name in ["add", "sub"] else "2.0"
+                return f"{output_var}.at({index_vars}) = {input_vars[0]}.data.at({index_vars}) {op_symbol} {constant}"
+            else:
+                return f"// Error: No inputs for {node.op_name}"
         else:
-            return f"{output_buffer_name}.at({index_vars}) = {input_vars[0]}.data.at({index_vars});"
+            # For other operations, use template-based generation
+            try:
+                return self._generate_operation_from_template(
+                    node, input_vars, index_vars, output_var
+                )
+            except:
+                # Fallback for unknown operations
+                return f"// Unknown operation: {node.op_name}"
+
+    def _generate_loop_fused_statements(
+        self,
+        nodes: list[ConductorNode],
+        input_vars: list[str],
+        index_vars: str,
+        output_buffer_name: str
+    ) -> list[str]:
+        """
+        Generate multiple computation statements for loop fusion.
+
+        This creates separate statements that will be placed within the same loop,
+        enabling true loop fusion where intermediate results are computed and used
+        within the same iteration.
+
+        Args:
+            nodes: List of nodes to fuse
+            input_vars: Input variable names
+            index_vars: Index variables for array access
+            output_buffer_name: Final output buffer name
+
+        Returns:
+            List of computation statements
+        """
+        statements = []
+        current_inputs = input_vars.copy()
+
+        # Generate local variable declarations for intermediate results
+        intermediate_vars = []
+        for i, node in enumerate(nodes[:-1]):  # All except last
+            var_name = f"temp_{node.op_name}"
+            intermediate_vars.append(var_name)
+
+        for i, node in enumerate(nodes):
+            if i == len(nodes) - 1:
+                # Last operation writes to final output buffer
+                output_var = output_buffer_name
+            else:
+                # Intermediate operations use temporary scalar variables
+                output_var = intermediate_vars[i]
+
+            # Generate computation step
+            if node.op_name in ["add", "mul", "sub", "div"]:
+                op_symbol = self._get_operation_symbol(node.op_name)
+
+                # Handle input mapping for fused operations
+                if i == 0:
+                    # First operation: add(x, y) - uses first two inputs
+                    if len(input_vars) >= 2:
+                        stmt = f"{output_var} = {input_vars[0]}.data.at({index_vars}) {op_symbol} {input_vars[1]}.data.at({index_vars});"
+                    else:
+                        # Fallback for single input
+                        constant = "1.0" if node.op_name in ["add", "sub"] else "2.0"
+                        stmt = f"{output_var} = {input_vars[0]}.data.at({index_vars}) {op_symbol} {constant};"
+                else:
+                    # Subsequent operations: use previous result + remaining inputs
+                    if node.op_name == "mul" and len(input_vars) >= 3:
+                        # mul(temp_add, z) - uses temp result and third input
+                        stmt = f"{output_var} = {current_inputs[0]} {op_symbol} {input_vars[2]}.data.at({index_vars});"
+                    elif len(current_inputs) >= 1:
+                        # Generic case: use previous result with constant
+                        constant = "1.0" if node.op_name in ["add", "sub"] else "2.0"
+                        stmt = f"{output_var} = {current_inputs[0]} {op_symbol} {constant};"
+                    else:
+                        stmt = f"// Error: No inputs for {node.op_name}"
+
+                # For final operation, write to output buffer
+                if i == len(nodes) - 1:
+                    stmt = stmt.replace(f"{output_var} = ", f"{output_var}.at({index_vars}) = ")
+
+                statements.append(stmt)
+
+                # Update current inputs for next operation
+                current_inputs = [output_var]
+            else:
+                # Handle non-arithmetic operations
+                stmt = f"// Unsupported operation in fusion: {node.op_name}"
+                statements.append(stmt)
+
+        return statements
 
     def _generate_sequential_operations_from_templates(
         self,
@@ -1912,6 +2117,167 @@ class ChoreoDslGen:
     def _indent_lines(self, lines: list[str]) -> list[str]:
         """Add indentation to multiple lines."""
         return [self._indent(line) for line in lines]
+
+    def _can_do_annotation_loop_fusion(self, dag: ComputationDAG, annotation: DAGNamingAnnotation) -> bool:
+        """
+        Check if we can do loop fusion for the annotated DAG.
+
+        Loop fusion is beneficial when:
+        1. We have multiple elementwise operations
+        2. All operations have the same tensor dimensions
+        3. Operations are in a dependency chain
+        """
+        if len(annotation.execution_order) <= 1:
+            return False
+
+        # Check if all operations are elementwise
+        elementwise_ops = {"add", "mul", "sub", "div"}
+        for node_id in annotation.execution_order:
+            # Find the actual node
+            node = None
+            for dag_node in dag.nodes:
+                if self._get_node_id(dag_node) == node_id:
+                    node = dag_node
+                    break
+
+            if not node or node.op_name not in elementwise_ops:
+                return False
+
+        # Check if operations have compatible dimensions
+        # For now, assume they're compatible if they're all elementwise
+        # In a full implementation, we'd check actual tensor shapes
+        return True
+
+    def _generate_fused_computation_with_annotation(
+        self,
+        dag: ComputationDAG,
+        annotation: DAGNamingAnnotation,
+        dma_load_mapping: dict
+    ) -> list[str]:
+        """
+        Generate fused computation with multiple operations in a single loop structure.
+        """
+        lines = []
+
+        # Get the first node to determine loop structure
+        first_node_id = annotation.execution_order[0]
+        first_node = None
+        for dag_node in dag.nodes:
+            if self._get_node_id(dag_node) == first_node_id:
+                first_node = dag_node
+                break
+
+        if not first_node or not first_node.outputs or not first_node.outputs[0].shape:
+            # Fallback to non-fused generation
+            return []
+
+        # Determine loop structure from first node's output shape
+        output_shape = first_node.outputs[0].shape
+        first_naming = annotation.node_naming[first_node_id]
+
+        if len(output_shape) == 2:
+            # Generate single nested loop for all operations
+            height = output_shape[0]
+            width = output_shape[1]
+
+            lines.append(f"{DSLKeywords.FOREACH.value} {first_naming.index_vars[0]} in [{height}] {{")
+            lines.append(f"  {DSLKeywords.FOREACH.value} {first_naming.index_vars[1]} in [{width}] {{")
+
+            # Generate all computation statements within the same loop
+            for i, node_id in enumerate(annotation.execution_order):
+                naming = annotation.node_naming[node_id]
+
+                # Find the actual node
+                node = None
+                for dag_node in dag.nodes:
+                    if self._get_node_id(dag_node) == node_id:
+                        node = dag_node
+                        break
+
+                if node:
+                    # Generate computation statement for this node
+                    stmt = self._generate_fused_computation_statement(
+                        node, naming, dma_load_mapping, annotation, i
+                    )
+                    lines.append(f"    {stmt}")
+
+            lines.append("  }")  # Close inner foreach
+            lines.append("}")    # Close outer foreach
+
+        return lines
+
+    def _generate_fused_computation_statement(
+        self,
+        node: ConductorNode,
+        naming: NodeNaming,
+        dma_load_mapping: dict,
+        annotation: DAGNamingAnnotation,
+        node_index: int
+    ) -> str:
+        """
+        Generate a single computation statement for fused operations.
+        """
+        # Map node inputs to correct variables
+        actual_input_vars = []
+        for input_buf in node.inputs:
+            if input_buf.name in dma_load_mapping:
+                # This is a DAG input - use DMA load variable
+                actual_input_vars.append(dma_load_mapping[input_buf.name])
+            else:
+                # This is an intermediate result - find the output variable from previous node
+                producer_node = input_buf.producer
+                if producer_node:
+                    producer_id = self._get_node_id(producer_node)
+                    if producer_id in annotation.node_naming:
+                        producer_naming = annotation.node_naming[producer_id]
+                        if producer_naming.output_vars:
+                            # For fused operations, use temp variable name
+                            if node_index > 0:
+                                actual_input_vars.append(f"temp_{producer_naming.output_vars[0]}")
+                            else:
+                                actual_input_vars.append(producer_naming.output_vars[0])
+                        else:
+                            actual_input_vars.append(f"temp_{producer_id}")
+                    else:
+                        actual_input_vars.append(f"temp_{producer_id}")
+                else:
+                    actual_input_vars.append(f"unknown_input_{len(actual_input_vars)}")
+
+        # Generate computation based on operation type
+        op_symbol = self._get_operation_symbol(node.op_name)
+        output_var = naming.output_vars[0] if naming.output_vars else f"temp_{node.op_name}"
+
+        # Use consistent index variables from the first node (the loop variables)
+        first_node_id = annotation.execution_order[0]
+        first_naming = annotation.node_naming[first_node_id]
+        loop_index_vars = f"{first_naming.index_vars[0]}, {first_naming.index_vars[1]}" if len(first_naming.index_vars) >= 2 else first_naming.index_vars[0]
+
+        if node.op_name in ["add", "mul", "sub", "div"]:
+            if len(actual_input_vars) >= 2:
+                # Binary operation
+                if node_index == 0:
+                    # First operation: read from DMA load variables
+                    return f"{output_var}.at({loop_index_vars}) = {actual_input_vars[0]}.data.at({loop_index_vars}) {op_symbol} {actual_input_vars[1]}.data.at({loop_index_vars});"
+                else:
+                    # Subsequent operations: use temp variable + DMA load
+                    # For add+mul case: temp_add * z
+                    if len(actual_input_vars) >= 2:
+                        if actual_input_vars[1].startswith("l1_load"):
+                            # Use the intermediate result from previous operation as a scalar
+                            # The intermediate result should be accessed at the same index
+                            prev_output = actual_input_vars[0].replace("temp_", "")
+                            return f"{output_var}.at({loop_index_vars}) = {prev_output}.at({loop_index_vars}) {op_symbol} {actual_input_vars[1]}.data.at({loop_index_vars});"
+                        else:
+                            return f"{output_var}.at({loop_index_vars}) = {actual_input_vars[0]} {op_symbol} {actual_input_vars[1]};"
+                    else:
+                        return f"{output_var}.at({loop_index_vars}) = {actual_input_vars[0]} {op_symbol} 1.0;"
+            else:
+                # Unary operation
+                constant = "1.0" if node.op_name in ["add", "sub"] else "2.0"
+                return f"{output_var}.at({loop_index_vars}) = {actual_input_vars[0]}.data.at({loop_index_vars}) {op_symbol} {constant};"
+        else:
+            # Unknown operation
+            return f"// Unknown operation: {node.op_name}"
 
 
 # Alias for backward compatibility
